@@ -1,0 +1,17 @@
+{
+  "name": "syncbridge",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "desktop": "npm --workspace apps/desktop run dev",
+    "api": "npm --workspace apps/api run dev",
+    "networking": "npm --workspace apps/networking run dev"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

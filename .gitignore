@@ -1,0 +1,39 @@
+# Node
+node_modules/
+dist/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# TypeScript
+*.tsbuildinfo
+
+# Coverage
+coverage/
+
+# Electron
+out/
+release/
+
+# Java / Spring Boot
+target/
+*.class
+*.jar
+*.war
+
+# IntelliJ
+*.iml
