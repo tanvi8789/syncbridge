@@ -1,19 +1,17 @@
-const VERSION = "1.0.0";
+import { DiscoveryService } from "./discovery/discovery";
 
-function banner() {
-    console.clear();
+console.log("====================================");
+console.log("     SyncBridge Networking Engine");
+console.log("     Version 1.0.0");
+console.log("====================================");
 
-    console.log("====================================");
-    console.log("     SyncBridge Networking Engine");
-    console.log(`     Version ${VERSION}`);
-    console.log("====================================");
-    console.log("");
-}
+console.log("\nStarting networking engine...\n");
 
-function main() {
-    banner();
+const discovery = new DiscoveryService();
 
-    console.log("Networking engine started successfully!");
-}
+discovery.start();
 
-main();
+process.on("SIGINT", () => {
+    console.log("\nShutting down SyncBridge...");
+    discovery.stop();
+});
