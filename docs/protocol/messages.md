@@ -47,3 +47,45 @@ UDP Unicast
   "platform": "macOS"
 }
 ```
+
+
+## CONNECT_REQUEST
+
+Sent by a device when it wants to establish a peer connection.
+
+Fields:
+
+- `type`
+- `version`
+- `requestId`
+- `deviceId`
+- `timestamp`
+
+---
+
+## CONNECT_ACCEPT
+
+Sent when a connection request is accepted.
+
+Fields:
+
+- `type`
+- `version`
+- `requestId`
+- `deviceId`
+- `timestamp`
+
+---
+
+## CONNECT_REJECT
+
+Sent when a connection request is rejected.
+
+Fields:
+
+- `type`
+- `version`
+- `requestId`
+- `deviceId`
+- `reason`
+- `timestamp`

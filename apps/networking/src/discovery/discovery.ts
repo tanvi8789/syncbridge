@@ -11,16 +11,13 @@ export class DiscoveryService {
     private discoveryInterval?: NodeJS.Timeout;
     private cleanupInterval?: NodeJS.Timeout;
 
-    constructor() {
-        this.identity = new DeviceIdentity();
+    constructor(identity: DeviceIdentity) {
+        this.identity = identity;
         this.registry = new DeviceRegistry();
 
-        console.log(
-            `[DEVICE] Device ID: ${this.identity.deviceId}`
-        );
-
         this.socket = new DiscoverySocket(
-            (message, remote) => this.handleMessage(message, remote)
+            (message, remote) =>
+                this.handleMessage(message, remote)
         );
     }
 
@@ -55,7 +52,9 @@ export class DiscoveryService {
             JSON.stringify(message)
         );
 
-        console.log("[DISCOVERY] Broadcasting DISCOVER");
+        console.log(
+            "[DISCOVERY] Broadcasting DISCOVER"
+        );
 
         this.socket.sendBroadcast(payload);
     }
@@ -71,7 +70,9 @@ export class DiscoveryService {
         let parsedMessage: unknown;
 
         try {
-            parsedMessage = JSON.parse(message.toString());
+            parsedMessage = JSON.parse(
+                message.toString()
+            );
         } catch {
             console.log(
                 "[DISCOVERY] Ignoring invalid JSON packet"
@@ -89,7 +90,8 @@ export class DiscoveryService {
             typeof parsedMessage === "object" &&
             parsedMessage !== null &&
             "deviceId" in parsedMessage &&
-            parsedMessage.deviceId === this.identity.deviceId
+            parsedMessage.deviceId ===
+                this.identity.deviceId
         ) {
             console.log(
                 "[DISCOVERY] Ignoring own broadcast"
@@ -113,9 +115,12 @@ export class DiscoveryService {
             typeof parsedMessage === "object" &&
             parsedMessage !== null &&
             "type" in parsedMessage &&
-            parsedMessage.type === "DISCOVER_RESPONSE"
+            parsedMessage.type ===
+                "DISCOVER_RESPONSE"
         ) {
-            this.handleDiscoveryResponse(parsedMessage);
+            this.handleDiscoveryResponse(
+                parsedMessage
+            );
             return;
         }
 
@@ -233,6 +238,8 @@ export class DiscoveryService {
         // Close UDP socket
         this.socket.stop();
 
-        console.log("[DISCOVERY] Discovery service stopped");
+        console.log(
+            "[DISCOVERY] Discovery service stopped"
+        );
     }
 }
