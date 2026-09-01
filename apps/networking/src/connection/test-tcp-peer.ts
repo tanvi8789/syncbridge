@@ -8,7 +8,7 @@ import {
 } from "./framing";
 
 const TCP_PORT = 41236;
-const TCP_HOST = "127.0.0.1";
+const TCP_HOST = "192.168.1.15";
 
 const TEST_DEVICE_ID = randomUUID();
 

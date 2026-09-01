@@ -1,0 +1,2 @@
+Hello from SyncBridge!
+This is an end-to-end file transfer test.

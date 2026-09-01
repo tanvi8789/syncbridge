@@ -35,7 +35,8 @@ export class ConnectionManager {
     private transferManager: TransferManager;
 
     constructor(
-        private readonly deviceId: string
+        private readonly deviceId: string,
+        private readonly tcpPort: number = 41236
     ) {
         this.transferManager =
             new TransferManager();
@@ -110,7 +111,7 @@ export class ConnectionManager {
         await new Promise<void>(
             (resolve, reject) => {
                 socket.connect(
-                    TCP_PORT,
+                    this.tcpPort,
                     device.ip,
                     () => {
                         console.log(
@@ -131,6 +132,82 @@ export class ConnectionManager {
                 );
             }
         );
+    }
+
+    async sendFile(
+        peerDeviceId: string,
+        filePath: string
+    ): Promise<void> {
+        const connection =
+            this.connections.get(peerDeviceId);
+
+        if (!connection) {
+            console.error(
+                `[CONNECTION] No connection found for ${peerDeviceId}`
+            );
+            return;
+        }
+
+        if (
+            connection.state !==
+            ConnectionState.CONNECTED
+        ) {
+            console.error(
+                `[CONNECTION] Peer ${peerDeviceId} is not connected`
+            );
+            return;
+        }
+
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const stats =
+            await fs.stat(filePath);
+
+        if (!stats.isFile()) {
+            console.error(
+                `[CONNECTION] Not a file: ${filePath}`
+            );
+            return;
+        }
+
+        const fileName =
+            path.basename(filePath);
+
+        const transferId =
+            this.transferManager.requestTransfer(
+                connection.socket,
+                this.deviceId,
+                fileName
+            );
+
+        console.log(
+            `[CONNECTION] File transfer requested: ${transferId}`
+        );
+
+        /*
+        * The receiver must accept the transfer
+        * before the actual file data is sent.
+        */
+    }
+
+    getConnections() {
+        return Array.from(
+            this.connections.entries()
+        ).map(
+            ([deviceId, connection]) => ({
+                deviceId,
+                state: connection.state,
+                remoteAddress:
+                    connection.socket.remoteAddress,
+                remotePort:
+                    connection.socket.remotePort,
+            })
+        );
+    }
+
+    getTransfers() {
+        return this.transferManager.getTransfers();
     }
 
     handleIncomingConnection(
@@ -409,4 +486,42 @@ export class ConnectionManager {
 
         socket.write(payload);
     }
+    getConnectedDevices(): string[] {
+        const connectedDevices: string[] = [];
+
+        for (const [deviceId, connection] of this.connections) {
+            if (
+                connection.state ===
+                ConnectionState.CONNECTED
+            ) {
+                connectedDevices.push(deviceId);
+            }
+        }
+
+        return connectedDevices;
+    }
+
+    async sendFileToFirstConnectedPeer(
+        filePath: string
+    ): Promise<void> {
+        const connectedDevices =
+            this.getConnectedDevices();
+
+        if (connectedDevices.length === 0) {
+            console.error(
+                "[CONNECTION] No connected peers available"
+            );
+
+            return;
+        }
+
+        const peerDeviceId =
+            connectedDevices[0];
+
+        await this.sendFile(
+            peerDeviceId,
+            filePath
+        );
+    }
+
 }

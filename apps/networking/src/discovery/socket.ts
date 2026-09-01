@@ -1,7 +1,7 @@
 import dgram from "node:dgram";
 
 const DISCOVERY_PORT = 41234;
-const BROADCAST_ADDRESS = "192.168.111.255";
+const BROADCAST_ADDRESS = "192.168.1.255";
 
 export type MessageHandler = (
     message: Buffer,

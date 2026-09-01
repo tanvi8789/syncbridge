@@ -1,7 +1,4 @@
-import { DeviceIdentity } from "./discovery/device-identity";
-import { DiscoveryService } from "./discovery/discovery";
-import { ConnectionManager } from "./connection/connection-manager";
-import { TcpServer } from "./connection/tcp-server";
+import { NetworkingEngine } from "./networking-engine";
 
 console.log("====================================");
 console.log("     SyncBridge Networking Engine");
@@ -11,33 +8,16 @@ console.log("====================================");
 console.log("Starting networking engine...");
 console.log("");
 
-const deviceIdentity = new DeviceIdentity();
+const networking =
+    new NetworkingEngine();
 
-const deviceId = deviceIdentity.deviceId;
-
-console.log(`[DEVICE] Device ID: ${deviceId}`);
-
-const discovery = new DiscoveryService(
-    deviceIdentity
-);
-
-const connectionManager = new ConnectionManager(
-    deviceId
-);
-
-const tcpServer = new TcpServer(
-    (socket) => {
-        connectionManager.handleIncomingConnection(
-            socket
-        );
-    }
+console.log(
+    `[DEVICE] Device ID: ${networking.deviceIdentity.deviceId}`
 );
 
 async function start(): Promise<void> {
     try {
-        await discovery.start();
-
-        tcpServer.start();
+        await networking.start();
     } catch (error) {
         console.error(
             "[STARTUP] Failed to start networking engine:",
@@ -58,15 +38,25 @@ function shutdown(): void {
     shuttingDown = true;
 
     console.log("");
-    console.log("Shutting down SyncBridge...");
+    console.log(
+        "Shutting down SyncBridge..."
+    );
 
-    discovery.stop();
-    tcpServer.stop();
+    networking.stop();
 
-    console.log("[SHUTDOWN] Networking engine stopped");
+    console.log(
+        "[SHUTDOWN] Networking engine stopped"
+    );
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on(
+    "SIGINT",
+    shutdown
+);
+
+process.on(
+    "SIGTERM",
+    shutdown
+);
 
 start();

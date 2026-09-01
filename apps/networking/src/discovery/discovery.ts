@@ -1,4 +1,6 @@
 import dgram from "node:dgram";
+import os from "node:os";
+
 import { DiscoverySocket } from "./socket";
 import { DeviceIdentity } from "./device-identity";
 import { DeviceRegistry } from "./device-registry";
@@ -77,6 +79,7 @@ export class DiscoveryService {
             console.log(
                 "[DISCOVERY] Ignoring invalid JSON packet"
             );
+
             return;
         }
 
@@ -85,7 +88,12 @@ export class DiscoveryService {
             parsedMessage
         );
 
-        // Ignore messages originating from this device
+        /*
+         * Ignore messages originating from this device.
+         *
+         * Because UDP broadcast is received by the sender
+         * as well, seeing our own DISCOVER is normal.
+         */
         if (
             typeof parsedMessage === "object" &&
             parsedMessage !== null &&
@@ -96,10 +104,13 @@ export class DiscoveryService {
             console.log(
                 "[DISCOVERY] Ignoring own broadcast"
             );
+
             return;
         }
 
-        // Handle DISCOVER
+        /*
+         * Another device is looking for peers.
+         */
         if (
             typeof parsedMessage === "object" &&
             parsedMessage !== null &&
@@ -107,10 +118,13 @@ export class DiscoveryService {
             parsedMessage.type === "DISCOVER"
         ) {
             this.sendDiscoveryResponse(remote);
+
             return;
         }
 
-        // Handle DISCOVER_RESPONSE
+        /*
+         * Another device responded to our discovery.
+         */
         if (
             typeof parsedMessage === "object" &&
             parsedMessage !== null &&
@@ -121,6 +135,7 @@ export class DiscoveryService {
             this.handleDiscoveryResponse(
                 parsedMessage
             );
+
             return;
         }
 
@@ -132,12 +147,36 @@ export class DiscoveryService {
     private sendDiscoveryResponse(
         remote: dgram.RemoteInfo
     ): void {
+        /*
+         * IMPORTANT:
+         *
+         * remote.address = address of the OTHER device.
+         *
+         * We must advertise OUR OWN IP address instead.
+         */
+        const localIp = this.getLocalIpAddress();
+
+        if (!localIp) {
+            console.error(
+                "[DISCOVERY] Could not determine local IP address"
+            );
+
+            return;
+        }
+
         const response = {
             type: "DISCOVER_RESPONSE",
-            deviceId: this.identity.deviceId,
-            deviceName: this.identity.deviceName,
-            ip: remote.address,
-            platform: process.platform,
+
+            deviceId:
+                this.identity.deviceId,
+
+            deviceName:
+                this.identity.deviceName,
+
+            ip: localIp,
+
+            platform:
+                process.platform,
         };
 
         const payload = Buffer.from(
@@ -148,11 +187,51 @@ export class DiscoveryService {
             `[DISCOVERY] Sending DISCOVER_RESPONSE to ${remote.address}:${remote.port}`
         );
 
+        console.log(
+            `[DISCOVERY] Advertising local IP: ${localIp}`
+        );
+
         this.socket.send(
             payload,
             remote.address,
             remote.port
         );
+    }
+
+    /**
+     * Find the IPv4 address of the machine
+     * that is running SyncBridge.
+     */
+    private getLocalIpAddress(): string | undefined {
+        const interfaces =
+            os.networkInterfaces();
+
+        for (const interfaceName of Object.keys(
+            interfaces
+        )) {
+            const addresses =
+                interfaces[interfaceName];
+
+            if (!addresses) {
+                continue;
+            }
+
+            for (const address of addresses) {
+                /*
+                 * We only want:
+                 * - IPv4
+                 * - non-internal address
+                 */
+                if (
+                    address.family === "IPv4" &&
+                    !address.internal
+                ) {
+                    return address.address;
+                }
+            }
+        }
+
+        return undefined;
     }
 
     private handleDiscoveryResponse(
@@ -172,13 +251,21 @@ export class DiscoveryService {
             console.log(
                 "[DISCOVERY] Invalid DISCOVER_RESPONSE"
             );
+
             return;
         }
 
-        const deviceId = message.deviceId;
-        const deviceName = message.deviceName;
-        const ip = message.ip;
-        const platform = message.platform;
+        const deviceId =
+            message.deviceId;
+
+        const deviceName =
+            message.deviceName;
+
+        const ip =
+            message.ip;
+
+        const platform =
+            message.platform;
 
         // Validate field types
         if (
@@ -190,6 +277,23 @@ export class DiscoveryService {
             console.log(
                 "[DISCOVERY] Invalid DISCOVER_RESPONSE fields"
             );
+
+            return;
+        }
+
+        /*
+         * Never register ourselves.
+         *
+         * This is an additional safety check in case
+         * a response somehow contains our own device ID.
+         */
+        if (
+            deviceId === this.identity.deviceId
+        ) {
+            console.log(
+                "[DISCOVERY] Ignoring own device response"
+            );
+
             return;
         }
 
@@ -225,14 +329,22 @@ export class DiscoveryService {
     stop(): void {
         // Stop discovery broadcast timer
         if (this.discoveryInterval) {
-            clearInterval(this.discoveryInterval);
-            this.discoveryInterval = undefined;
+            clearInterval(
+                this.discoveryInterval
+            );
+
+            this.discoveryInterval =
+                undefined;
         }
 
         // Stop stale-device cleanup timer
         if (this.cleanupInterval) {
-            clearInterval(this.cleanupInterval);
-            this.cleanupInterval = undefined;
+            clearInterval(
+                this.cleanupInterval
+            );
+
+            this.cleanupInterval =
+                undefined;
         }
 
         // Close UDP socket
