@@ -72,4 +72,14 @@ export class NetworkingEngine {
         return this.connectionManager
             .getTransfers();
     }
+
+    requestFileTransfer(
+        deviceId: string,
+        filePath: string
+    ) {
+        return this.connectionManager.requestTransfer(
+            deviceId,
+            filePath
+        );
+    }
 }

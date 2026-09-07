@@ -30,12 +30,13 @@ export interface Transfer {
 }
 
 async function fetchApi<T>(
-    endpoint: string
+    endpoint: string,
+    options?: RequestInit
 ): Promise<T> {
-    const response =
-        await fetch(
-            `${API_BASE_URL}${endpoint}`
-        );
+    const response = await fetch(
+        `${API_BASE_URL}${endpoint}`,
+        options
+    );
 
     if (!response.ok) {
         throw new Error(
@@ -76,33 +77,63 @@ export function getTransfers(): Promise<
     );
 }
 
-export async function connectToDevice(
+export interface TransferRequest {
+    deviceId: string;
+    filePath: string;
+}
+
+export interface TransferResponse {
+    transferId: string;
+}
+
+export function requestTransfer(
+    request: TransferRequest
+): Promise<TransferResponse> {
+    return fetchApi<TransferResponse>(
+        "/api/transfers",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type":
+                    "application/json",
+            },
+            body: JSON.stringify(request),
+        }
+    );
+}
+
+export function connectToDevice(
     deviceId: string
-): Promise<void> {
-    const response =
-        await fetch(
-            `${API_BASE_URL}/api/connections`,
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type":
-                        "application/json",
-                },
-                body: JSON.stringify({
-                    deviceId,
-                }),
-            }
-        );
+): Promise<{ success: boolean }> {
+    return fetchApi<{ success: boolean }>(
+        "/api/connections",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                deviceId,
+            }),
+        }
+    );
+}
 
-    if (!response.ok) {
-        const data =
-            await response.json().catch(
-                () => null
-            );
-
-        throw new Error(
-            data?.error ??
-                `Connection request failed: ${response.status}`
-        );
-    }
+export function startTransfer(
+    deviceId: string,
+    filePath: string
+): Promise<TransferResponse> {
+    return fetchApi<TransferResponse>(
+        "/api/transfers",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                deviceId,
+                filePath,
+            }),
+        }
+    );
 }

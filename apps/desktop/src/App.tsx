@@ -10,6 +10,7 @@ import {
     getDevice,
     getDevices,
     getTransfers,
+    startTransfer,
     type ConnectionInfo,
     type DeviceInfo,
     type DiscoveredDevice,
@@ -40,6 +41,9 @@ function App() {
     const [connectingDeviceId, setConnectingDeviceId] =
         useState<string | null>(null);
 
+    const [sendingDeviceId, setSendingDeviceId] =
+        useState<string | null>(null);
+
     const loadData = useCallback(
         async () => {
             try {
@@ -56,18 +60,9 @@ function App() {
                 ]);
 
                 setDevice(deviceData);
-
-                setDevices(
-                    devicesData
-                );
-
-                setConnections(
-                    connectionsData
-                );
-
-                setTransfers(
-                    transfersData
-                );
+                setDevices(devicesData);
+                setConnections(connectionsData);
+                setTransfers(transfersData);
 
                 setApiOnline(true);
                 setError(null);
@@ -140,6 +135,39 @@ function App() {
             );
         }
     };
+
+    const handleSendFile = async (
+        deviceId: string
+    ) => {
+        try {
+            setSendingDeviceId(deviceId);
+            setError(null);
+
+            const filePath =
+                await window.electronAPI.selectFile();
+
+            if (!filePath) {
+                return;
+            }
+
+            await startTransfer(
+                deviceId,
+                filePath
+            );
+
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to start file transfer"
+            );
+        } finally {
+            setSendingDeviceId(null);
+        }
+    };
+
+    
 
     return (
         <div className="app">
@@ -232,6 +260,36 @@ function App() {
 
                 <section className="card">
                     <div className="card-header">
+                        <h2>File Transfer Test</h2>
+                    </div>
+
+                    <button
+                        className="connect-button"
+                        onClick={async () => {
+                            try {
+                                const filePath =
+                                    await window.electronAPI.selectFile();
+
+                                if (filePath) {
+                                    setError(
+                                        `Selected: ${filePath}`
+                                    );
+                                }
+                            } catch (err) {
+                                setError(
+                                    err instanceof Error
+                                        ? err.message
+                                        : "Failed to select file"
+                                );
+                            }
+                        }}
+                    >
+                        Select File
+                    </button>
+                </section>
+
+                <section className="card">
+                    <div className="card-header">
                         <h2>
                             Discovered Devices
                         </h2>
@@ -269,6 +327,10 @@ function App() {
 
                                     const connecting =
                                         connectingDeviceId ===
+                                        peer.deviceId;
+
+                                    const sending =
+                                        sendingDeviceId ===
                                         peer.deviceId;
 
                                     return (
@@ -332,6 +394,24 @@ function App() {
                                                     {connecting
                                                         ? "Connecting..."
                                                         : "Connect"}
+                                                </button>
+                                            )}
+
+                                            {connected && (
+                                                <button
+                                                    className="connect-button"
+                                                    onClick={() =>
+                                                        handleSendFile(
+                                                            peer.deviceId
+                                                        )
+                                                    }
+                                                    disabled={
+                                                        sending
+                                                    }
+                                                >
+                                                    {sending
+                                                        ? "Sending..."
+                                                        : "Send File"}
                                                 </button>
                                             )}
                                         </div>

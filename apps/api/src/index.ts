@@ -10,6 +10,22 @@ const API_PORT = 41235;
 const networking =
     new NetworkingEngine();
 
+async function readBody(
+    request: http.IncomingMessage
+): Promise<string> {
+    const chunks: Buffer[] = [];
+
+    for await (const chunk of request) {
+        chunks.push(
+            Buffer.isBuffer(chunk)
+                ? chunk
+                : Buffer.from(chunk)
+        );
+    }
+
+    return Buffer.concat(chunks).toString("utf8");
+}
+
 async function start(): Promise<void> {
     try {
         await networking.start();
@@ -20,7 +36,7 @@ async function start(): Promise<void> {
 
         const server =
             http.createServer(
-                (request, response) => {
+                async (request, response) => {
                     response.setHeader(
                         "Content-Type",
                         "application/json"
@@ -41,6 +57,10 @@ async function start(): Promise<void> {
                         "Content-Type"
                     );
 
+                    // -------------------------
+                    // CORS preflight
+                    // -------------------------
+
                     if (
                         request.method === "OPTIONS"
                     ) {
@@ -49,13 +69,15 @@ async function start(): Promise<void> {
                         return;
                     }
 
+                    // -------------------------
+                    // Health
+                    // -------------------------
+
                     if (
                         request.method === "GET" &&
                         request.url === "/health"
                     ) {
-                        response.writeHead(
-                            200
-                        );
+                        response.writeHead(200);
 
                         response.end(
                             JSON.stringify({
@@ -68,13 +90,15 @@ async function start(): Promise<void> {
                         return;
                     }
 
+                    // -------------------------
+                    // My device
+                    // -------------------------
+
                     if (
                         request.method === "GET" &&
                         request.url === "/api/device"
                     ) {
-                        response.writeHead(
-                            200
-                        );
+                        response.writeHead(200);
 
                         response.end(
                             JSON.stringify(
@@ -85,13 +109,15 @@ async function start(): Promise<void> {
                         return;
                     }
 
+                    // -------------------------
+                    // Discovered devices
+                    // -------------------------
+
                     if (
                         request.method === "GET" &&
                         request.url === "/api/devices"
                     ) {
-                        response.writeHead(
-                            200
-                        );
+                        response.writeHead(200);
 
                         response.end(
                             JSON.stringify(
@@ -103,13 +129,15 @@ async function start(): Promise<void> {
                         return;
                     }
 
+                    // -------------------------
+                    // Connections
+                    // -------------------------
+
                     if (
                         request.method === "GET" &&
                         request.url === "/api/connections"
                     ) {
-                        response.writeHead(
-                            200
-                        );
+                        response.writeHead(200);
 
                         response.end(
                             JSON.stringify(
@@ -121,118 +149,105 @@ async function start(): Promise<void> {
                         return;
                     }
 
+                    // -------------------------
+                    // Connect to device
+                    // -------------------------
+
                     if (
                         request.method === "POST" &&
                         request.url === "/api/connections"
                     ) {
-                        let body = "";
+                        try {
+                            const body =
+                                await readBody(request);
 
-                        request.on(
-                            "data",
-                            (chunk) => {
-                                body +=
-                                    chunk.toString();
+                            const parsed =
+                                JSON.parse(body);
+
+                            if (
+                                typeof parsed.deviceId !==
+                                "string"
+                            ) {
+                                response.writeHead(400);
+
+                                response.end(
+                                    JSON.stringify({
+                                        error:
+                                            "deviceId is required",
+                                    })
+                                );
+
+                                return;
                             }
-                        );
 
-                        request.on(
-                            "end",
-                            async () => {
-                                try {
-                                    const parsed =
-                                        JSON.parse(
-                                            body
-                                        );
+                            const devices =
+                                networking
+                                    .getDiscoveredDevices();
 
-                                    if (
-                                        typeof parsed.deviceId !==
-                                        "string"
-                                    ) {
-                                        response.writeHead(
-                                            400
-                                        );
+                            const device =
+                                devices.find(
+                                    (item) =>
+                                        item.deviceId ===
+                                        parsed.deviceId
+                                );
 
-                                        response.end(
-                                            JSON.stringify({
-                                                error:
-                                                    "deviceId is required",
-                                            })
-                                        );
+                            if (!device) {
+                                response.writeHead(404);
 
-                                        return;
-                                    }
+                                response.end(
+                                    JSON.stringify({
+                                        error:
+                                            "Device not found",
+                                    })
+                                );
 
-                                    const devices =
-                                        networking.getDiscoveredDevices();
-
-                                    const device =
-                                        devices.find(
-                                            (item) =>
-                                                item.deviceId ===
-                                                parsed.deviceId
-                                        );
-
-                                    if (!device) {
-                                        response.writeHead(
-                                            404
-                                        );
-
-                                        response.end(
-                                            JSON.stringify({
-                                                error:
-                                                    "Device not found",
-                                            })
-                                        );
-
-                                        return;
-                                    }
-
-                                    await networking.connectionManager.connectToDevice(
-                                        device
-                                    );
-
-                                    response.writeHead(
-                                        200
-                                    );
-
-                                    response.end(
-                                        JSON.stringify({
-                                            status:
-                                                "connecting",
-                                            deviceId:
-                                                device.deviceId,
-                                        })
-                                    );
-                                } catch (error) {
-                                    console.error(
-                                        "[API] Connection request failed:",
-                                        error
-                                    );
-
-                                    response.writeHead(
-                                        500
-                                    );
-
-                                    response.end(
-                                        JSON.stringify({
-                                            error:
-                                                "Failed to connect to device",
-                                        })
-                                    );
-                                }
+                                return;
                             }
-                        );
+
+                            await networking
+                                .connectionManager
+                                .connectToDevice(
+                                    device
+                                );
+
+                            response.writeHead(200);
+
+                            response.end(
+                                JSON.stringify({
+                                    status:
+                                        "connecting",
+                                    deviceId:
+                                        device.deviceId,
+                                })
+                            );
+                        } catch (error) {
+                            console.error(
+                                "[API] Connection request failed:",
+                                error
+                            );
+
+                            response.writeHead(500);
+
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        "Failed to connect to device",
+                                })
+                            );
+                        }
 
                         return;
                     }
+
+                    // -------------------------
+                    // Transfers
+                    // -------------------------
 
                     if (
                         request.method === "GET" &&
                         request.url === "/api/transfers"
                     ) {
-                        response.writeHead(
-                            200
-                        );
+                        response.writeHead(200);
 
                         response.end(
                             JSON.stringify(
@@ -244,18 +259,91 @@ async function start(): Promise<void> {
                         return;
                     }
 
-                    response.writeHead(
-                        404
-                    );
+                    // -------------------------
+                    // Start file transfer
+                    // -------------------------
+
+                    if (
+                        request.method === "POST" &&
+                        request.url === "/api/transfers"
+                    ) {
+                        try {
+                            const body =
+                                await readBody(request);
+
+                            const parsed =
+                                JSON.parse(body);
+
+                            if (
+                                typeof parsed.deviceId !==
+                                "string" ||
+                                typeof parsed.filePath !==
+                                "string"
+                            ) {
+                                response.writeHead(400);
+
+                                response.end(
+                                    JSON.stringify({
+                                        error:
+                                            "deviceId and filePath are required",
+                                    })
+                                );
+
+                                return;
+                            }
+
+                            const transfer =
+                                networking
+                                    .requestFileTransfer(
+                                        parsed.deviceId,
+                                        parsed.filePath
+                                    );
+
+                            response.writeHead(201);
+
+                            response.end(
+                                JSON.stringify(
+                                    transfer
+                                )
+                            );
+                        } catch (error) {
+                            console.error(
+                                "[API] File transfer request failed:",
+                                error
+                            );
+
+                            response.writeHead(400);
+
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Failed to start transfer",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    // -------------------------
+                    // 404
+                    // -------------------------
+
+                    response.writeHead(404);
 
                     response.end(
                         JSON.stringify({
-                            error:
-                                "Not found",
+                            error: "Not found",
                         })
                     );
                 }
             );
+
+        // -------------------------
+        // Start API server
+        // -------------------------
 
         server.listen(
             API_PORT,
@@ -266,6 +354,10 @@ async function start(): Promise<void> {
                 );
             }
         );
+
+        // -------------------------
+        // Graceful shutdown
+        // -------------------------
 
         let shuttingDown = false;
 

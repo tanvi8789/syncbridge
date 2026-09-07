@@ -524,4 +524,32 @@ export class ConnectionManager {
         );
     }
 
+    requestTransfer(
+        deviceId: string,
+        filePath: string
+    ) {
+        const connection =
+            this.connections.get(deviceId);
+
+        if (!connection) {
+            throw new Error(
+                `No connection found for device ${deviceId}`
+            );
+        }
+
+        if (
+            connection.state !== "CONNECTED"
+        ) {
+            throw new Error(
+                `Device ${deviceId} is not connected`
+            );
+        }
+
+        return this.transferManager.requestTransfer(
+            connection.socket,
+            this.deviceId,
+            filePath
+        );
+    }
+
 }

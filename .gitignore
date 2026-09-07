@@ -26,6 +26,7 @@ pnpm-debug.log*
 coverage/
 
 # Electron
+electron-build/
 out/
 release/
 

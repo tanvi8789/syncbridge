@@ -12,6 +12,8 @@
     "networking": "npm --workspace apps/networking run dev"
   },
   "devDependencies": {
+    "@types/electron": "^1.4.38",
+    "electron": "^44.2.0",
     "typescript": "^7.0.2"
   }
 }
