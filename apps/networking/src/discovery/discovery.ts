@@ -1,9 +1,11 @@
 import dgram from "node:dgram";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 
 import { DiscoverySocket } from "./socket";
 import { DeviceIdentity } from "./device-identity";
 import { DeviceRegistry } from "./device-registry";
+import type { ProtocolEventListener } from "../protocol-event";
 
 export class DiscoveryService {
     private socket: DiscoverySocket;
@@ -13,7 +15,10 @@ export class DiscoveryService {
     private discoveryInterval?: NodeJS.Timeout;
     private cleanupInterval?: NodeJS.Timeout;
 
-    constructor(identity: DeviceIdentity) {
+    constructor(
+        identity: DeviceIdentity,
+        private readonly onEvent?: ProtocolEventListener
+    ) {
         this.identity = identity;
         this.registry = new DeviceRegistry();
 
@@ -59,6 +64,7 @@ export class DiscoveryService {
         );
 
         this.socket.sendBroadcast(payload);
+        this.emit("DISCOVER_SENT");
     }
 
     private handleMessage(
@@ -68,6 +74,7 @@ export class DiscoveryService {
         console.log(
             `[DISCOVERY] Received packet from ${remote.address}:${remote.port}`
         );
+        this.emit("DISCOVER_RECEIVED", remote.address);
 
         let parsedMessage: unknown;
 
@@ -196,6 +203,7 @@ export class DiscoveryService {
             remote.address,
             remote.port
         );
+        this.emit("DISCOVER_RESPONSE_SENT", remote.address);
     }
 
     /**
@@ -320,6 +328,7 @@ export class DiscoveryService {
             ip,
             platform,
         });
+        this.emit("DEVICE_DISCOVERED", deviceId, deviceName);
     }
 
     getDevices() {
@@ -353,5 +362,20 @@ export class DiscoveryService {
         console.log(
             "[DISCOVERY] Discovery service stopped"
         );
+    }
+
+    private emit(
+        type: "DISCOVER_SENT" | "DISCOVER_RECEIVED" | "DISCOVER_RESPONSE_SENT" | "DEVICE_DISCOVERED",
+        deviceId?: string,
+        detail?: string
+    ): void {
+        this.onEvent?.({
+            id: randomUUID(),
+            timestamp: Date.now(),
+            type,
+            layer: "discovery",
+            deviceId,
+            detail,
+        });
     }
 }

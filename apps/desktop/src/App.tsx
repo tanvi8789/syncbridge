@@ -6,15 +6,18 @@ import {
 
 import {
     connectToDevice,
+    disconnectDevice,
     getConnections,
     getDevice,
     getDevices,
     getTransfers,
     startTransfer,
+    subscribeToProtocolEvents,
     type ConnectionInfo,
     type DeviceInfo,
     type DiscoveredDevice,
     type Transfer,
+    type ProtocolEvent,
 } from "./api";
 
 import "./App.css";
@@ -41,8 +44,14 @@ function App() {
     const [connectingDeviceId, setConnectingDeviceId] =
         useState<string | null>(null);
 
+    const [disconnectingDeviceId, setDisconnectingDeviceId] =
+        useState<string | null>(null);
+
     const [sendingDeviceId, setSendingDeviceId] =
         useState<string | null>(null);
+
+    const [protocolEvents, setProtocolEvents] =
+        useState<ProtocolEvent[]>([]);
 
     const loadData = useCallback(
         async () => {
@@ -85,14 +94,26 @@ function App() {
         const interval =
             setInterval(
                 loadData,
-                2000
+                10_000
             );
 
         return () =>
             clearInterval(
-                interval
+            interval
             );
     }, [loadData]);
+
+    useEffect(() =>
+        subscribeToProtocolEvents(
+            (event) => {
+                setProtocolEvents((current) =>
+                    [event, ...current].slice(0, 12)
+                );
+                void loadData();
+            },
+            () => setApiOnline(false)
+        ),
+    [loadData]);
 
     const connectedDeviceIds =
         new Set(
@@ -136,15 +157,43 @@ function App() {
         }
     };
 
-    const handleSendFile = async (
+    const handleDisconnect = async (
         deviceId: string
     ) => {
+        try {
+            setDisconnectingDeviceId(
+                deviceId
+            );
+            setError(null);
+            await disconnectDevice(
+                deviceId
+            );
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to disconnect device"
+            );
+        } finally {
+            setDisconnectingDeviceId(
+                null
+            );
+        }
+    };
+
+    const handleSendFile = async (deviceId: string) => {
         try {
             setSendingDeviceId(deviceId);
             setError(null);
 
-            const filePath =
-                await window.electronAPI.selectFile();
+            // Guard against missing preload API
+            if (!window.electronAPI?.selectFile) {
+                setError('File picker not available – preload script may not be loaded.');
+                return;
+            }
+
+            const filePath = await window.electronAPI.selectFile();
 
             if (!filePath) {
                 return;
@@ -267,20 +316,18 @@ function App() {
                         className="connect-button"
                         onClick={async () => {
                             try {
-                                const filePath =
-                                    await window.electronAPI.selectFile();
+                                // Guard against missing preload API
+                                if (!window.electronAPI?.selectFile) {
+                                    setError('File picker not available – preload may not be loaded.');
+                                    return;
+                                }
+                                const filePath = await window.electronAPI.selectFile();
 
                                 if (filePath) {
-                                    setError(
-                                        `Selected: ${filePath}`
-                                    );
+                                    setError(`Selected: ${filePath}`);
                                 }
                             } catch (err) {
-                                setError(
-                                    err instanceof Error
-                                        ? err.message
-                                        : "Failed to select file"
-                                );
+                                setError(err instanceof Error ? err.message : 'Failed to select file');
                             }
                         }}
                     >
@@ -398,21 +445,40 @@ function App() {
                                             )}
 
                                             {connected && (
-                                                <button
-                                                    className="connect-button"
-                                                    onClick={() =>
-                                                        handleSendFile(
+                                                <div style={{ display: "flex", gap: "8px" }}>
+                                                    <button
+                                                        className="connect-button"
+                                                        onClick={() =>
+                                                            handleSendFile(
+                                                                peer.deviceId
+                                                            )
+                                                        }
+                                                        disabled={
+                                                            sending
+                                                        }
+                                                    >
+                                                        {sending
+                                                            ? "Sending..."
+                                                            : "Send File"}
+                                                    </button>
+                                                    <button
+                                                        className="disconnect-button"
+                                                        onClick={() =>
+                                                            handleDisconnect(
+                                                                peer.deviceId
+                                                            )
+                                                        }
+                                                        disabled={
+                                                            disconnectingDeviceId ===
                                                             peer.deviceId
-                                                        )
-                                                    }
-                                                    disabled={
-                                                        sending
-                                                    }
-                                                >
-                                                    {sending
-                                                        ? "Sending..."
-                                                        : "Send File"}
-                                                </button>
+                                                        }
+                                                    >
+                                                        {disconnectingDeviceId ===
+                                                        peer.deviceId
+                                                            ? "Disconnecting..."
+                                                            : "Disconnect"}
+                                                    </button>
+                                                </div>
                                             )}
                                         </div>
                                     );
@@ -463,30 +529,96 @@ function App() {
 
                                         <div>
                                             <strong className="mono">
-                                                {
-                                                    connection.deviceId
-                                                }
+                                                {connection.deviceName
+                                                    ? `${connection.deviceName} (${connection.deviceId.slice(0, 8)})`
+                                                    : connection.deviceId}
                                             </strong>
 
-                                            <span>
-                                                {
-                                                    connection.remoteAddress
-                                                }
-                                                :
-                                                {
-                                                    connection.remotePort
-                                                }
-                                            </span>
+                                            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "2px" }}>
+                                                <span>
+                                                    {connection.remoteAddress
+                                                        ? `${connection.remoteAddress}:${connection.remotePort}`
+                                                        : "LAN"}
+                                                </span>
+                                                {connection.sessionId && (
+                                                    <span className="session-badge">
+                                                        Session: {connection.sessionId.slice(0, 8)}
+                                                    </span>
+                                                )}
+                                                {connection.connectedAt && (
+                                                    <span>
+                                                        · {new Date(connection.connectedAt).toLocaleTimeString()}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {connection.rejectReason && (
+                                                <div style={{ color: "#a83232", fontSize: "11px", fontWeight: 600, marginTop: "2px" }}>
+                                                    Error: {connection.rejectReason}
+                                                </div>
+                                            )}
                                         </div>
 
-                                        <span className="state">
-                                            {
-                                                connection.state
-                                            }
-                                        </span>
+                                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                            <span className="state">
+                                                {connection.state}
+                                            </span>
+                                            {connection.state === "CONNECTED" && (
+                                                <button
+                                                    className="disconnect-button"
+                                                    onClick={() =>
+                                                        handleDisconnect(
+                                                            connection.deviceId
+                                                        )
+                                                    }
+                                                    disabled={
+                                                        disconnectingDeviceId ===
+                                                        connection.deviceId
+                                                    }
+                                                >
+                                                    {disconnectingDeviceId ===
+                                                    connection.deviceId
+                                                        ? "..."
+                                                        : "Disconnect"}
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
                                 )
                             )}
+                        </div>
+                    )}
+                </section>
+
+                <section className="card">
+                    <div className="card-header">
+                        <h2>Connection Activity</h2>
+
+                        <span className="count">
+                            {protocolEvents.length}
+                        </span>
+                    </div>
+
+                    {protocolEvents.length === 0 ? (
+                        <div className="empty-state compact">
+                            <strong>No activity yet</strong>
+
+                            <p>
+                                Discovery and connection events will appear here live.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="event-list">
+                            {protocolEvents.map((event) => (
+                                <div className="event-row" key={event.id}>
+                                    <time>
+                                        {new Date(event.timestamp).toLocaleTimeString()}
+                                    </time>
+                                    <strong>{event.type}</strong>
+                                    <span>
+                                        {event.detail || event.deviceId || event.layer}
+                                    </span>
+                                </div>
+                            ))}
                         </div>
                     )}
                 </section>

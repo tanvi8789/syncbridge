@@ -6,7 +6,7 @@
   "main": "electron-build/main.js",
   "scripts": {
     "dev": "vite",
-    "electron": "electron .",
+    "electron": "electron . --no-sandbox",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"

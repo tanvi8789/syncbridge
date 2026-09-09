@@ -129,7 +129,8 @@
 
 .device-list,
 .connection-list,
-.transfer-list {
+.transfer-list,
+.event-list {
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -137,7 +138,8 @@
 
 .device-row,
 .connection-row,
-.transfer-row {
+.transfer-row,
+.event-row {
     display: flex;
     align-items: center;
     gap: 14px;
@@ -200,6 +202,24 @@
     color: #4d535a !important;
     font-size: 11px !important;
     font-weight: 700;
+}
+
+.event-row {
+    display: grid;
+    grid-template-columns: 92px 190px 1fr;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+}
+
+.event-row time,
+.event-row span {
+    color: #737981;
+}
+
+.event-row strong {
+    font-family: "SFMono-Regular", Consolas, monospace;
+    font-size: 12px;
 }
 
 .empty-state {
@@ -292,4 +312,35 @@
 .connect-button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
+
+.disconnect-button {
+    border: 1px solid #f1cccc;
+    background: #fbecec;
+    color: #a83232;
+    padding: 8px 13px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.disconnect-button:hover {
+    background: #f5dada;
+}
+
+.disconnect-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.session-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #eef2ff;
+    color: #3b5998;
+    font-family: monospace;
 }

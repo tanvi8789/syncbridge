@@ -36,6 +36,8 @@ socket.connect(TCP_PORT, TCP_HOST, () => {
         type: MessageType.CONNECT_REQUEST,
         version: "1.0.0",
         requestId: randomUUID(),
+        messageId: randomUUID(),
+        sequence: 0,
         deviceId: TEST_DEVICE_ID,
         timestamp: Date.now(),
     };

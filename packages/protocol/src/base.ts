@@ -4,5 +4,12 @@
 export interface BaseMessage {
     type: string;
     version: string;
+
+    messageId: string;
+    sessionId: string;
+
     timestamp: number;
+    sequence: number;
+
+    senderId: string;
 }

@@ -3,6 +3,7 @@ import http from "node:http";
 import {
     NetworkingEngine,
 } from "networking";
+import type { ProtocolEvent } from "networking";
 
 const API_HOST = "127.0.0.1";
 const API_PORT = 41235;
@@ -42,10 +43,18 @@ async function start(): Promise<void> {
                         "application/json"
                     );
 
-                    response.setHeader(
-                        "Access-Control-Allow-Origin",
-                        "http://localhost:5173"
-                    );
+                    const origin = request.headers.origin;
+                    if (origin) {
+                        response.setHeader(
+                            "Access-Control-Allow-Origin",
+                            origin
+                        );
+                    } else {
+                        response.setHeader(
+                            "Access-Control-Allow-Origin",
+                            "*"
+                        );
+                    }
 
                     response.setHeader(
                         "Access-Control-Allow-Methods",
@@ -54,7 +63,7 @@ async function start(): Promise<void> {
 
                     response.setHeader(
                         "Access-Control-Allow-Headers",
-                        "Content-Type"
+                        "Content-Type, Authorization"
                     );
 
                     // -------------------------
@@ -105,6 +114,36 @@ async function start(): Promise<void> {
                                 networking.getDeviceInfo()
                             )
                         );
+
+                        return;
+                    }
+
+                    // -------------------------
+                    // Live networking events
+                    // -------------------------
+
+                    if (
+                        request.method === "GET" &&
+                        request.url === "/api/events"
+                    ) {
+                        response.writeHead(200, {
+                            "Content-Type": "text/event-stream",
+                            "Cache-Control": "no-cache, no-transform",
+                            Connection: "keep-alive",
+                        });
+
+                        response.write("retry: 3000\n\n");
+
+                        const sendEvent = (event: ProtocolEvent) => {
+                            response.write(
+                                `event: protocol-event\ndata: ${JSON.stringify(event)}\n\n`
+                            );
+                        };
+
+                        networking.on("protocol-event", sendEvent);
+                        request.on("close", () => {
+                            networking.off("protocol-event", sendEvent);
+                        });
 
                         return;
                     }
@@ -231,7 +270,94 @@ async function start(): Promise<void> {
                             response.end(
                                 JSON.stringify({
                                     error:
-                                        "Failed to connect to device",
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Failed to connect to device",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    // -------------------------
+                    // Disconnect device
+                    // -------------------------
+
+                    if (
+                        (request.method === "DELETE" &&
+                            request.url?.startsWith("/api/connections")) ||
+                        (request.method === "POST" &&
+                            request.url === "/api/connections/disconnect")
+                    ) {
+                        try {
+                            let targetDeviceId: string | null = null;
+                            const urlObj = new URL(
+                                request.url,
+                                `http://${request.headers.host || "127.0.0.1"}`
+                            );
+                            targetDeviceId =
+                                urlObj.searchParams.get("deviceId");
+
+                            if (!targetDeviceId) {
+                                const body =
+                                    await readBody(request);
+                                if (body) {
+                                    try {
+                                        const parsed =
+                                            JSON.parse(body);
+                                        if (
+                                            typeof parsed.deviceId ===
+                                            "string"
+                                        ) {
+                                            targetDeviceId =
+                                                parsed.deviceId;
+                                        }
+                                    } catch {
+                                        // Ignore JSON parse error if body is not JSON
+                                    }
+                                }
+                            }
+
+                            if (!targetDeviceId) {
+                                response.writeHead(400);
+                                response.end(
+                                    JSON.stringify({
+                                        error:
+                                            "deviceId is required",
+                                    })
+                                );
+                                return;
+                            }
+
+                            const disconnected =
+                                networking.disconnectDevice(
+                                    targetDeviceId
+                                );
+
+                            response.writeHead(200);
+                            response.end(
+                                JSON.stringify({
+                                    status: disconnected
+                                        ? "disconnected"
+                                        : "not_found",
+                                    deviceId:
+                                        targetDeviceId,
+                                })
+                            );
+                        } catch (error) {
+                            console.error(
+                                "[API] Disconnect failed:",
+                                error
+                            );
+
+                            response.writeHead(500);
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Failed to disconnect",
                                 })
                             );
                         }

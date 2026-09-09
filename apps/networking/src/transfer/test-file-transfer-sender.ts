@@ -62,6 +62,11 @@ function sendConnectRequest(): void {
         requestId:
             randomUUID(),
 
+        messageId:
+            randomUUID(),
+
+        sequence: 0,
+
         deviceId:
             peerDeviceId,
 

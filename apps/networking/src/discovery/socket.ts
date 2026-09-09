@@ -12,7 +12,10 @@ export class DiscoverySocket {
     private socket: dgram.Socket;
 
     constructor(private onMessage: MessageHandler) {
-        this.socket = dgram.createSocket("udp4");
+        this.socket = dgram.createSocket({
+            type: "udp4",
+            reuseAddr: true,
+        });
 
         this.socket.on("error", (error) => {
             console.error("[UDP] Socket error:", error);

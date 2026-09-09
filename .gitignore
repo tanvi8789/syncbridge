@@ -42,3 +42,9 @@ target/
 
 roadmap.md
 changelog.md
+SyncBridge_Roadmap.md
+
+# Protocol generated files
+packages/protocol/src/*.js
+packages/protocol/src/*.js.map
+packages/protocol/src/*.d.ts

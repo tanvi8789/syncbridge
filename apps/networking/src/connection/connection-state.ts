@@ -3,6 +3,8 @@ export const ConnectionState = {
     CONNECTING: "CONNECTING",
     CONNECTED: "CONNECTED",
     REJECTED: "REJECTED",
+    FAILED: "FAILED",
+    CLOSING: "CLOSING",
 } as const;
 
 export type ConnectionState =

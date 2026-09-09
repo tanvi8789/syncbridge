@@ -2,25 +2,33 @@ import { DeviceIdentity } from "./discovery/device-identity";
 import { DiscoveryService } from "./discovery/discovery";
 import { ConnectionManager } from "./connection/connection-manager";
 import { TcpServer } from "./connection/tcp-server";
+import { EventEmitter } from "node:events";
+import type { ProtocolEvent } from "./protocol-event";
 
-export class NetworkingEngine {
+export class NetworkingEngine extends EventEmitter {
     readonly deviceIdentity: DeviceIdentity;
     readonly discovery: DiscoveryService;
     readonly connectionManager: ConnectionManager;
     readonly tcpServer: TcpServer;
 
     constructor() {
+        super();
         this.deviceIdentity =
             new DeviceIdentity();
 
         this.discovery =
             new DiscoveryService(
-                this.deviceIdentity
+                this.deviceIdentity,
+                (event) => this.publishEvent(event)
             );
 
         this.connectionManager =
             new ConnectionManager(
-                this.deviceIdentity.deviceId
+                this.deviceIdentity.deviceId,
+                this.deviceIdentity.deviceName,
+                undefined,
+                undefined,
+                (event) => this.publishEvent(event)
             );
 
         this.tcpServer =
@@ -68,6 +76,10 @@ export class NetworkingEngine {
             .getConnections();
     }
 
+    disconnectDevice(deviceId: string): boolean {
+        return this.connectionManager.disconnectDevice(deviceId);
+    }
+
     getTransfers() {
         return this.connectionManager
             .getTransfers();
@@ -81,5 +93,9 @@ export class NetworkingEngine {
             deviceId,
             filePath
         );
+    }
+
+    private publishEvent(event: ProtocolEvent): void {
+        this.emit("protocol-event", event);
     }
 }

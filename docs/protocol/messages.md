@@ -58,6 +58,8 @@ Fields:
 - `type`
 - `version`
 - `requestId`
+- `messageId` — unique identifier for this protocol message
+- `sequence` — monotonically increasing sender sequence number
 - `deviceId`
 - `timestamp`
 
@@ -72,7 +74,10 @@ Fields:
 - `type`
 - `version`
 - `requestId`
+- `messageId`
+- `sequence`
 - `deviceId`
+- `sessionId`
 - `timestamp`
 
 ---
@@ -86,6 +91,18 @@ Fields:
 - `type`
 - `version`
 - `requestId`
+- `messageId`
+- `sequence`
 - `deviceId`
 - `reason`
 - `timestamp`
+
+---
+
+## TCP message framing
+
+TCP messages use a 4-byte unsigned big-endian payload-length header followed by
+a UTF-8 JSON payload. The decoder accepts fragmented and coalesced TCP data,
+rejects invalid JSON, and caps a single frame at 16 MiB. `requestId` correlates
+a handshake request with its response; `messageId` identifies each individual
+message; and `sessionId` is issued in `CONNECT_ACCEPT`.
