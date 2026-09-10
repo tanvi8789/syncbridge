@@ -24,7 +24,7 @@ let mainWindow:
 function createWindow(): void {
     console.log(
         "[ELECTRON] Preload path:",
-        path.join(__dirname, "preload.cjs")
+        path.join(__dirname, "..", "electron-build", "preload.cjs")
     );
 
     mainWindow =
@@ -35,11 +35,7 @@ function createWindow(): void {
             minHeight: 600,
 
             webPreferences: {
-                preload:
-                    path.join(
-                        __dirname,
-                        "preload.cjs"
-                    ),
+                preload: isDev ? path.join(__dirname, "preload.cts") : path.join(__dirname, "..", "electron-build", "preload.cjs"),
                 contextIsolation: true,
                 nodeIntegration: false,
             },
