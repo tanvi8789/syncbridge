@@ -1,9 +1,4 @@
-import {
-    app,
-    BrowserWindow,
-    dialog,
-    ipcMain,
-} from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,9 +12,7 @@ const __dirname =
 const isDev =
     !app.isPackaged;
 
-let mainWindow:
-    | BrowserWindow
-    | null = null;
+let mainWindow: BrowserWindow | null = null;
 
 function createWindow(): void {
     console.log(
@@ -35,7 +28,7 @@ function createWindow(): void {
             minHeight: 600,
 
             webPreferences: {
-                preload: isDev ? path.join(__dirname, "preload.cts") : path.join(__dirname, "..", "electron-build", "preload.cjs"),
+                preload: path.join(__dirname, "..", "electron-build", "preload.cjs"),
                 contextIsolation: true,
                 nodeIntegration: false,
             },
