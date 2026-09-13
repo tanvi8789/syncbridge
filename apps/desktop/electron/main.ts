@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -60,6 +60,10 @@ ipcMain.handle("select-file", async () => {
         return null;
     }
     return result.filePaths[0];
+});
+
+ipcMain.handle("show-in-folder", (_event, filePath: string) => {
+    shell.showItemInFolder(filePath);
 });
 
 app.whenReady().then(() => {

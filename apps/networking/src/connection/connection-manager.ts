@@ -233,7 +233,8 @@ export class ConnectionManager {
             this.transferManager.requestTransfer(
                 connection.socket,
                 this.deviceId,
-                filePath
+                filePath,
+                peerDeviceId
             );
 
         console.log(
@@ -403,7 +404,8 @@ export class ConnectionManager {
         ) {
             this.transferManager.handleMessage(
                 socket,
-                message
+                message,
+                peerDeviceId
             );
 
             return;
@@ -728,7 +730,8 @@ export class ConnectionManager {
         return this.transferManager.requestTransfer(
             connection.socket,
             this.deviceId,
-            filePath
+            filePath,
+            deviceId
         );
     }
 

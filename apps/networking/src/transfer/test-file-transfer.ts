@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -19,10 +20,12 @@ const TEST_FILE =
         "10mb.bin"
     );
 
+// Matches TransferReceiver's fixed download location.
 const RECEIVED_FILE =
-    path.resolve(
-        process.cwd(),
-        "received",
+    path.join(
+        os.homedir(),
+        "SyncBridge",
+        "Received",
         "10mb.bin"
     );
 

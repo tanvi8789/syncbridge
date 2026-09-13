@@ -14,5 +14,11 @@ contextBridge.exposeInMainWorld(
             ipcRenderer.invoke(
                 "select-file"
             ),
+
+        showInFolder: (filePath: string): Promise<void> =>
+            ipcRenderer.invoke(
+                "show-in-folder",
+                filePath
+            ),
     }
 );

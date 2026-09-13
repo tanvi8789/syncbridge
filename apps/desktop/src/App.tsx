@@ -657,7 +657,7 @@ function App() {
                                         }
                                     >
                                         <div className="file-icon">
-                                            ▱
+                                            {transfer.direction === "received" ? "↓" : "↑"}
                                         </div>
 
                                         <div className="transfer-info">
@@ -668,6 +668,8 @@ function App() {
                                             </strong>
 
                                             <span>
+                                                {transfer.direction === "received" ? "Received" : "Sent"}
+                                                {" · "}
                                                 {formatBytes(
                                                     transfer.fileSize
                                                 )}{" "}
@@ -677,13 +679,37 @@ function App() {
                                                 }{" "}
                                                 chunks
                                             </span>
+
+                                            {transfer.savedPath && (
+                                                <span className="mono" style={{ fontSize: "11px" }}>
+                                                    {transfer.savedPath}
+                                                </span>
+                                            )}
                                         </div>
 
-                                        <span className="state">
-                                            {
-                                                transfer.state
-                                            }
-                                        </span>
+                                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                            <span className="state">
+                                                {
+                                                    transfer.state
+                                                }
+                                            </span>
+
+                                            {transfer.direction === "received" &&
+                                                transfer.state === "COMPLETED" &&
+                                                transfer.savedPath &&
+                                                window.electronAPI?.showInFolder && (
+                                                    <button
+                                                        className="connect-button"
+                                                        onClick={() =>
+                                                            window.electronAPI.showInFolder(
+                                                                transfer.savedPath!
+                                                            )
+                                                        }
+                                                    >
+                                                        Show in Folder
+                                                    </button>
+                                                )}
+                                        </div>
                                     </div>
                                 )
                             )}

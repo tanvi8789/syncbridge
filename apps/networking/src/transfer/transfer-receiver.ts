@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { createHash } from "node:crypto";
@@ -23,23 +24,31 @@ import type {
     Transfer,
 } from "./transfer-state";
 
-interface ReceivingTransfer {
-    transfer: Transfer;
-    chunks: Map<number, Buffer>;
-}
-
 export class TransferReceiver {
-    private receivingTransfers =
-        new Map<string, ReceivingTransfer>();
+    /**
+     * In-flight chunk buffers, keyed by transfer ID. The Transfer
+     * records themselves live in the shared map passed in below so
+     * they stay visible to the rest of the app (and the desktop UI)
+     * while a transfer is in progress and after it completes.
+     */
+    private chunkBuffers =
+        new Map<string, Map<number, Buffer>>();
 
     /**
-     * Directory where received files are stored.
+     * Directory where received files are stored. Fixed under the
+     * user's home directory so it doesn't depend on which process
+     * cwd the networking engine happens to be started from.
      */
     private readonly receivedDirectory =
-        path.resolve(
-            process.cwd(),
-            "received"
+        path.join(
+            os.homedir(),
+            "SyncBridge",
+            "Received"
         );
+
+    constructor(
+        private readonly transfers: Map<string, Transfer>
+    ) {}
 
     /**
      * Handle incoming file metadata.
@@ -67,31 +76,41 @@ export class TransferReceiver {
             `[TRANSFER] Total chunks: ${metadata.totalChunks}`
         );
 
-        const transfer: Transfer = {
-            transferId:
-                metadata.transferId,
+        /*
+         * A placeholder entry is created as soon as the transfer
+         * request comes in (see TransferManager.handleTransferRequest),
+         * so it's already visible in the UI. Fill it in with the
+         * real size/chunk count now that metadata has arrived.
+         */
+        const existing =
+            this.transfers.get(
+                metadata.transferId
+            );
 
-            fileName:
-                metadata.fileName,
-
-            fileSize:
-                metadata.fileSize,
-
-            totalChunks:
-                metadata.totalChunks,
-
-            checksum: metadata.checksum,
-
-            state:
-                "TRANSFERRING",
+        const transfer: Transfer = existing ?? {
+            transferId: metadata.transferId,
+            direction: "received",
+            peerDeviceId: "unknown",
+            fileName: metadata.fileName,
+            fileSize: metadata.fileSize,
+            totalChunks: metadata.totalChunks,
+            state: "TRANSFERRING",
         };
 
-        this.receivingTransfers.set(
+        transfer.fileName = metadata.fileName;
+        transfer.fileSize = metadata.fileSize;
+        transfer.totalChunks = metadata.totalChunks;
+        transfer.checksum = metadata.checksum;
+        transfer.state = "TRANSFERRING";
+
+        this.transfers.set(
             metadata.transferId,
-            {
-                transfer,
-                chunks: new Map(),
-            }
+            transfer
+        );
+
+        this.chunkBuffers.set(
+            metadata.transferId,
+            new Map()
         );
 
         console.log(
@@ -109,12 +128,12 @@ export class TransferReceiver {
             "[TRANSFER] FILE_CHUNK received"
         );
 
-        const receivingTransfer =
-            this.receivingTransfers.get(
+        const chunks =
+            this.chunkBuffers.get(
                 chunk.transferId
             );
 
-        if (!receivingTransfer) {
+        if (!chunks) {
             console.error(
                 `[TRANSFER] Unknown transfer: ${chunk.transferId}`
             );
@@ -127,7 +146,7 @@ export class TransferReceiver {
          * being stored twice.
          */
         if (
-            receivingTransfer.chunks.has(
+            chunks.has(
                 chunk.chunkIndex
             )
         ) {
@@ -154,7 +173,7 @@ export class TransferReceiver {
             return;
         }
 
-        receivingTransfer.chunks.set(
+        chunks.set(
             chunk.chunkIndex,
             chunkBuffer
         );
@@ -189,23 +208,23 @@ export class TransferReceiver {
             `[TRANSFER] Transfer ID: ${message.transferId}`
         );
 
-        const receivingTransfer =
-            this.receivingTransfers.get(
+        const transfer =
+            this.transfers.get(
                 message.transferId
             );
 
-        if (!receivingTransfer) {
+        const chunks =
+            this.chunkBuffers.get(
+                message.transferId
+            );
+
+        if (!transfer || !chunks) {
             console.error(
                 `[TRANSFER] Unknown transfer: ${message.transferId}`
             );
 
             return;
         }
-
-        const {
-            transfer,
-            chunks,
-        } = receivingTransfer;
 
         /*
          * Make sure all expected chunks
@@ -349,10 +368,14 @@ export class TransferReceiver {
         );
 
         /*
-         * Mark the transfer as completed.
+         * Mark the transfer as completed and record
+         * where the file actually landed on disk.
          */
         transfer.state =
             "COMPLETED";
+
+        transfer.savedPath =
+            outputPath;
 
         /*
          * Tell the sender that the file
@@ -388,10 +411,11 @@ export class TransferReceiver {
         );
 
         /*
-         * Remove the transfer from the
-         * active receiving map.
+         * The completed chunk buffers are no longer needed, but the
+         * Transfer record itself stays in the shared map so it keeps
+         * showing up (as COMPLETED, with its savedPath) in the UI.
          */
-        this.receivingTransfers.delete(
+        this.chunkBuffers.delete(
             transfer.transferId
         );
     }

@@ -37,10 +37,13 @@ export interface ConnectionInfo {
 
 export interface Transfer {
     transferId: string;
+    direction: "sent" | "received";
+    peerDeviceId: string;
     fileName: string;
     fileSize: number;
     totalChunks: number;
     state: string;
+    savedPath?: string;
 }
 
 async function fetchApi<T>(

@@ -58,7 +58,7 @@ export class TransferManager {
             new TransferSender();
 
         this.receiver =
-            new TransferReceiver();
+            new TransferReceiver(this.transfers);
     }
 
     /**
@@ -68,7 +68,8 @@ export class TransferManager {
     requestTransfer(
         socket: net.Socket,
         senderDeviceId: string,
-        filePath: string
+        filePath: string,
+        peerDeviceId: string
     ): string | undefined {
         /*
          * Make sure the file exists.
@@ -116,6 +117,9 @@ export class TransferManager {
 
         const transfer: Transfer = {
             transferId,
+
+            direction: "sent",
+            peerDeviceId,
 
             fileName,
 
@@ -235,7 +239,8 @@ export class TransferManager {
      */
     handleMessage(
         socket: net.Socket,
-        message: object
+        message: object,
+        peerDeviceId: string
     ): void {
         if (
             !("type" in message)
@@ -251,7 +256,8 @@ export class TransferManager {
             case TransferMessageType.FILE_TRANSFER_REQUEST:
                 this.handleTransferRequest(
                     socket,
-                    message as FileTransferRequest
+                    message as FileTransferRequest,
+                    peerDeviceId
                 );
 
                 break;
@@ -308,7 +314,8 @@ export class TransferManager {
 
     private handleTransferRequest(
         socket: net.Socket,
-        request: FileTransferRequest
+        request: FileTransferRequest,
+        peerDeviceId: string
     ): void {
         console.log(
             "[TRANSFER] FILE_TRANSFER_REQUEST received"
@@ -321,6 +328,22 @@ export class TransferManager {
         console.log(
             `[TRANSFER] File: ${request.fileName}`
         );
+
+        /*
+         * Register a placeholder transfer immediately so it shows up
+         * in the UI while the request is being accepted; the real
+         * fileSize/totalChunks/checksum are filled in once FILE_METADATA
+         * arrives (see TransferReceiver.handleMetadata).
+         */
+        this.transfers.set(request.transferId, {
+            transferId: request.transferId,
+            direction: "received",
+            peerDeviceId,
+            fileName: request.fileName,
+            fileSize: 0,
+            totalChunks: 0,
+            state: "REQUESTED",
+        });
 
         /*
          * For now, automatically accept.

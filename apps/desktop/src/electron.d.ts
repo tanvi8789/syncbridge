@@ -6,6 +6,9 @@ declare global {
             selectFile(): Promise<
                 string | null
             >;
+            showInFolder(
+                filePath: string
+            ): Promise<void>;
         };
     }
 }
