@@ -7,7 +7,7 @@ SyncBridge is a desktop LAN synchronization platform designed to enable secure p
 The application follows a modular, multi-process architecture consisting of three primary applications:
 
 - Desktop Application (Electron + React)
-- API Service (Spring Boot)
+- Local API Service (Node.js)
 - Networking Engine (Node.js)
 
 ---
@@ -23,8 +23,8 @@ The application follows a modular, multi-process architecture consisting of thre
         REST / WebSocket
                │
 ┌──────────────▼──────────────┐
-│      Spring Boot API        │
-│ Session • Analytics • DB    │
+│      Local Node API         │
+│ Control plane • SSE events  │
 └──────────────┬──────────────┘
                │
          Internal Commands
@@ -63,7 +63,7 @@ Responsible for:
 - Device Registry
 - Transfer History
 - Analytics
-- Database Access
+- Local control API and SSE event forwarding
 
 ---
 
@@ -95,7 +95,9 @@ Protocol
 
 Internal communication between the control plane and networking engine.
 
-(Current implementation to be decided.)
+The API owns the networking engine in the desktop development topology. The
+Electron process only supplies native UI features (such as file selection), so
+there is exactly one engine per device.
 
 ---
 
@@ -175,17 +177,9 @@ Completion
 
 # Current Status
 
-Current Version
-
-0.1.0
-
-Status
-
-Project scaffold completed.
-
-Next milestone:
-
-Implement UDP device discovery.
+Current implementation includes discovery, connection lifecycle management, and
+verified file transfer. Folder synchronization, persistence, encryption, and
+cross-network discovery remain future work.
 
 
 

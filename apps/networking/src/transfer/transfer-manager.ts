@@ -19,6 +19,8 @@ import {
     CHUNK_SIZE,
 } from "./transfer-config";
 
+const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
+
 import {
     encodeMessage,
 } from "../connection/framing";
@@ -102,6 +104,10 @@ export class TransferManager {
 
         const fileSize =
             stats.size;
+
+        if (fileSize > MAX_FILE_BYTES) {
+            throw new Error("Files larger than 2 GiB are not supported");
+        }
 
         const totalChunks =
             Math.ceil(

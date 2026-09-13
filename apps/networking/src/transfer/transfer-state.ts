@@ -13,5 +13,7 @@ export interface Transfer {
 
     totalChunks: number;
 
+    checksum?: string;
+
     state: TransferState;
 }

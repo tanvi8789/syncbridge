@@ -61,6 +61,8 @@ export interface FileMetadata {
 
     totalChunks: number;
 
+    checksum: string;
+
     timestamp: number;
 }
 

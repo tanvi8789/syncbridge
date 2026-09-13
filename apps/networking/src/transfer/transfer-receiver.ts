@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
+import { createHash } from "node:crypto";
 
 import {
     TransferMessageType,
@@ -78,6 +79,8 @@ export class TransferReceiver {
 
             totalChunks:
                 metadata.totalChunks,
+
+            checksum: metadata.checksum,
 
             state:
                 "TRANSFERRING",
@@ -277,6 +280,14 @@ export class TransferReceiver {
                 `[TRANSFER] Received: ${fileBuffer.length}`
             );
 
+            return;
+        }
+
+        if (
+            typeof transfer.checksum !== "string" ||
+            createHash("sha256").update(fileBuffer).digest("hex") !== transfer.checksum
+        ) {
+            console.error("[TRANSFER] File checksum mismatch");
             return;
         }
 

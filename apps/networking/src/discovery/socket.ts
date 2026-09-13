@@ -1,7 +1,6 @@
 import dgram from "node:dgram";
 
 const DISCOVERY_PORT = 41234;
-const BROADCAST_ADDRESS = "192.168.1.255";
 
 export type MessageHandler = (
     message: Buffer,
@@ -42,22 +41,12 @@ export class DiscoverySocket {
         this.socket.bind(DISCOVERY_PORT);
     }
 
-    sendBroadcast(message: Buffer): void {
-        this.socket.send(
-            message,
-            0,
-            message.length,
-            DISCOVERY_PORT,
-            BROADCAST_ADDRESS,
-            (error) => {
-                if (error) {
-                    console.error("[UDP] Broadcast failed:", error);
-                    return;
-                }
-
-                console.log("[UDP] Broadcast sent");
-            }
-        );
+    sendBroadcast(message: Buffer, addresses: string[]): void {
+        for (const address of addresses) {
+            this.socket.send(message, 0, message.length, DISCOVERY_PORT, address, (error) => {
+                if (error) console.error(`[UDP] Broadcast to ${address} failed:`, error);
+            });
+        }
     }
 
     send(message: Buffer, address: string, port: number): void {

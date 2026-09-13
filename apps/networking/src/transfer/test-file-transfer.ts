@@ -54,6 +54,11 @@ async function main(): Promise<void> {
         );
     }
 
+    // Do not let an output from a previous run create a false positive.
+    if (fs.existsSync(RECEIVED_FILE)) {
+        fs.unlinkSync(RECEIVED_FILE);
+    }
+
     console.log(
         `[TEST] Test file created: ${TEST_FILE}`
     );

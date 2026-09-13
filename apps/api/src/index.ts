@@ -7,6 +7,7 @@ import type { ProtocolEvent } from "networking";
 
 const API_HOST = "127.0.0.1";
 const API_PORT = 41235;
+const ALLOWED_ORIGINS = new Set(["http://localhost:5173", "http://127.0.0.1:5173"]);
 
 const networking =
     new NetworkingEngine();
@@ -16,7 +17,10 @@ async function readBody(
 ): Promise<string> {
     const chunks: Buffer[] = [];
 
+    let size = 0;
     for await (const chunk of request) {
+        size += chunk.length;
+        if (size > 1_048_576) throw new Error("Request body exceeds 1 MiB");
         chunks.push(
             Buffer.isBuffer(chunk)
                 ? chunk
@@ -44,15 +48,10 @@ async function start(): Promise<void> {
                     );
 
                     const origin = request.headers.origin;
-                    if (origin) {
+                    if (origin && ALLOWED_ORIGINS.has(origin)) {
                         response.setHeader(
                             "Access-Control-Allow-Origin",
                             origin
-                        );
-                    } else {
-                        response.setHeader(
-                            "Access-Control-Allow-Origin",
-                            "*"
                         );
                     }
 

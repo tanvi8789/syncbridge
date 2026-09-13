@@ -118,8 +118,8 @@ export function requestTransfer(
 
 export function connectToDevice(
     deviceId: string
-): Promise<{ success: boolean }> {
-    return fetchApi<{ success: boolean }>(
+): Promise<{ status: string; deviceId: string }> {
+    return fetchApi<{ status: string; deviceId: string }>(
         "/api/connections",
         {
             method: "POST",

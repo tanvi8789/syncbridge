@@ -63,7 +63,7 @@ export class DiscoveryService {
             "[DISCOVERY] Broadcasting DISCOVER"
         );
 
-        this.socket.sendBroadcast(payload);
+        this.socket.sendBroadcast(payload, this.getBroadcastAddresses());
         this.emit("DISCOVER_SENT");
     }
 
@@ -240,6 +240,20 @@ export class DiscoveryService {
         }
 
         return undefined;
+    }
+
+    private getBroadcastAddresses(): string[] {
+        const addresses = new Set<string>();
+        for (const entries of Object.values(os.networkInterfaces())) {
+            for (const entry of entries ?? []) {
+                if (entry.family !== "IPv4" || entry.internal || !entry.netmask) continue;
+                const ip = entry.address.split(".").map(Number);
+                const mask = entry.netmask.split(".").map(Number);
+                if (ip.length !== 4 || mask.length !== 4) continue;
+                addresses.add(ip.map((octet, index) => octet | (255 ^ mask[index])).join("."));
+            }
+        }
+        return addresses.size > 0 ? [...addresses] : ["255.255.255.255"];
     }
 
     private handleDiscoveryResponse(

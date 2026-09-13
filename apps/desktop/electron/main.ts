@@ -1,16 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
-
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const __filename =
-    fileURLToPath(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const __dirname =
-    path.dirname(__filename);
-
-const isDev =
-    !app.isPackaged;
+const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -20,19 +15,17 @@ function createWindow(): void {
         path.join(__dirname, "..", "electron-build", "preload.cjs")
     );
 
-    mainWindow =
-        new BrowserWindow({
-            width: 1200,
-            height: 800,
-            minWidth: 900,
-            minHeight: 600,
-
-            webPreferences: {
-                preload: path.join(__dirname, "..", "electron-build", "preload.cjs"),
-                contextIsolation: true,
-                nodeIntegration: false,
-            },
-        });
+    mainWindow = new BrowserWindow({
+        width: 1200,
+        height: 800,
+        minWidth: 900,
+        minHeight: 600,
+        webPreferences: {
+            preload: path.join(__dirname, "..", "electron-build", "preload.cjs"),
+            contextIsolation: true,
+            nodeIntegration: false,
+        },
+    });
 
     mainWindow.webContents.on(
         "preload-error",
@@ -46,80 +39,41 @@ function createWindow(): void {
     );
 
     if (isDev) {
-        mainWindow.loadURL(
-            "http://localhost:5173"
-        );
+        mainWindow.loadURL("http://localhost:5173");
     } else {
         mainWindow.loadFile(
-            path.join(
-                __dirname,
-                "../dist/index.html"
-            )
+            path.join(__dirname, "../dist/index.html")
         );
     }
 
-    mainWindow.on(
-        "closed",
-        () => {
-            mainWindow = null;
-        }
-    );
+    mainWindow.on("closed", () => {
+        mainWindow = null;
+    });
 }
 
-ipcMain.handle(
-    "select-file",
-    async () => {
-        const result =
-            (await dialog.showOpenDialog({
-                properties: [
-                    "openFile",
-                ],
-            })) as unknown as {
-                canceled: boolean;
-                filePaths: string[];
-            };
+ipcMain.handle("select-file", async () => {
+    const result = (await dialog.showOpenDialog({
+        properties: ["openFile"],
+    })) as unknown as { canceled: boolean; filePaths: string[] };
 
-        if (
-            result.canceled ||
-            result.filePaths.length === 0
-        ) {
-            return null;
-        }
-
-        return result.filePaths[0];
+    if (result.canceled || result.filePaths.length === 0) {
+        return null;
     }
-);
-
-app.whenReady().then(() => {
-    mainWindow =
-        null;
-    
-    createWindow();
-
-    
-
-    app.on(
-        "activate",
-        () => {
-            if (
-                BrowserWindow
-                    .getAllWindows()
-                    .length === 0
-            ) {
-                createWindow();
-            }
-        }
-    );
+    return result.filePaths[0];
 });
 
-app.on(
-    "window-all-closed",
-    () => {
-        if (
-            process.platform !==
-            "darwin"
-        ) {
-            app.quit();
+app.whenReady().then(() => {
+    createWindow();
+
+    app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+            createWindow();
         }
+    });
+});
+
+app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+        app.quit();
     }
-);
+});

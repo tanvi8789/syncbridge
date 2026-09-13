@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "vite",
     "electron": "electron . --no-sandbox",
-    "build": "tsc -b && vite build",
-    "lint": "oxlint",
+    "build": "tsc -p tsconfig.electron.json && tsc -b && vite build",
+    "lint": "oxlint src electron",
+    "check": "tsc -p tsconfig.electron.json --noEmit && tsc -b",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
+import { createHash } from "node:crypto";
 
 import {
     TransferMessageType,
@@ -75,6 +76,13 @@ export class TransferSender {
         transfer.state =
             "TRANSFERRING";
 
+        // The receiver verifies this before committing the completed file.
+        const fileBuffer = fs.readFileSync(filePath);
+        const checksum = createHash("sha256")
+            .update(fileBuffer)
+            .digest("hex");
+        transfer.checksum = checksum;
+
         /*
          * Send file metadata first.
          */
@@ -94,6 +102,8 @@ export class TransferSender {
                 fileSize,
 
                 totalChunks,
+
+                checksum,
 
                 timestamp:
                     Date.now(),
@@ -119,14 +129,6 @@ export class TransferSender {
         console.log(
             `[TRANSFER] Total chunks: ${totalChunks}`
         );
-
-        /*
-         * Read the complete file.
-         */
-        const fileBuffer =
-            fs.readFileSync(
-                filePath
-            );
 
         /*
          * Split the file into chunks

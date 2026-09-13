@@ -233,7 +233,7 @@ export class ConnectionManager {
             this.transferManager.requestTransfer(
                 connection.socket,
                 this.deviceId,
-                fileName
+                filePath
             );
 
         console.log(
