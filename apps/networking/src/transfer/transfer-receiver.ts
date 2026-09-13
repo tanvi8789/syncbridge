@@ -8,12 +8,14 @@ import {
     TransferMessageType,
     type FileMetadata,
     type FileChunk,
+    type FileChunkAck,
     type FileTransferComplete,
     type FileTransferAck,
 } from "./transfer-messages";
 
 import {
     TRANSFER_VERSION,
+    CHUNK_SIZE,
 } from "./transfer-config";
 
 import {
@@ -23,6 +25,10 @@ import {
 import type {
     Transfer,
 } from "./transfer-state";
+
+import type {
+    TransferEventListener,
+} from "./transfer-event";
 
 export class TransferReceiver {
     /**
@@ -47,7 +53,8 @@ export class TransferReceiver {
         );
 
     constructor(
-        private readonly transfers: Map<string, Transfer>
+        private readonly transfers: Map<string, Transfer>,
+        private readonly onEvent?: TransferEventListener
     ) {}
 
     /**
@@ -94,6 +101,10 @@ export class TransferReceiver {
             fileName: metadata.fileName,
             fileSize: metadata.fileSize,
             totalChunks: metadata.totalChunks,
+            chunksAcked: 0,
+            bytesTransferred: 0,
+            retryCount: 0,
+            paused: false,
             state: "TRANSFERRING",
         };
 
@@ -122,18 +133,20 @@ export class TransferReceiver {
      * Handle an incoming file chunk.
      */
     handleChunk(
+        socket: net.Socket,
         chunk: FileChunk
     ): void {
-        console.log(
-            "[TRANSFER] FILE_CHUNK received"
-        );
+        const transfer =
+            this.transfers.get(
+                chunk.transferId
+            );
 
         const chunks =
             this.chunkBuffers.get(
                 chunk.transferId
             );
 
-        if (!chunks) {
+        if (!transfer || !chunks) {
             console.error(
                 `[TRANSFER] Unknown transfer: ${chunk.transferId}`
             );
@@ -142,8 +155,9 @@ export class TransferReceiver {
         }
 
         /*
-         * Prevent duplicate chunks from
-         * being stored twice.
+         * Prevent duplicate chunks from being stored twice, but
+         * still re-ack them in case our previous ack was the one
+         * that got lost/delayed and the sender's watchdog resent.
          */
         if (
             chunks.has(
@@ -152,6 +166,12 @@ export class TransferReceiver {
         ) {
             console.log(
                 `[TRANSFER] Duplicate chunk ignored: ${chunk.chunkIndex}`
+            );
+
+            this.acknowledgeChunk(
+                socket,
+                transfer,
+                chunk.chunkIndex
             );
 
             return;
@@ -188,8 +208,63 @@ export class TransferReceiver {
             );
         }
 
-        console.log(
-            `[TRANSFER] Chunk size: ${chunkBuffer.length} bytes`
+        if (chunk.chunkIndex + 1 > transfer.chunksAcked) {
+            transfer.chunksAcked = chunk.chunkIndex + 1;
+
+            transfer.bytesTransferred = Math.min(
+                transfer.chunksAcked * CHUNK_SIZE,
+                transfer.fileSize
+            );
+
+            transfer.lastProgressAt = Date.now();
+        }
+
+        this.acknowledgeChunk(
+            socket,
+            transfer,
+            chunk.chunkIndex
+        );
+    }
+
+    private acknowledgeChunk(
+        socket: net.Socket,
+        transfer: Transfer,
+        chunkIndex: number
+    ): void {
+        const ack: FileChunkAck = {
+            type: TransferMessageType.FILE_CHUNK_ACK,
+            version: TRANSFER_VERSION,
+            transferId: transfer.transferId,
+            chunkIndex,
+            timestamp: Date.now(),
+        };
+
+        this.sendMessage(
+            socket,
+            ack
+        );
+
+        this.onEvent?.({
+            transferId: transfer.transferId,
+            type: "CHUNK_ACKED",
+            chunkIndex,
+            chunksAcked: transfer.chunksAcked,
+            totalChunks: transfer.totalChunks,
+            bytesTransferred: transfer.bytesTransferred,
+            fileSize: transfer.fileSize,
+            timestamp: Date.now(),
+        });
+    }
+
+    /**
+     * Discard any in-flight state for a transfer that was cancelled
+     * by the peer (or by us) before it finished.
+     */
+    handleCancel(
+        transferId: string
+    ): void {
+        this.chunkBuffers.delete(
+            transferId
         );
     }
 

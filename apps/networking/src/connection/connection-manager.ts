@@ -22,6 +22,7 @@ import type {
     ProtocolEventListener,
     ProtocolEventType,
 } from "../protocol-event";
+import type { TransferEventListener } from "../transfer/transfer-event";
 
 const PROTOCOL_VERSION = "1.0.0";
 const TCP_PORT = 41236;
@@ -56,10 +57,23 @@ export class ConnectionManager {
         private readonly deviceName: string = "SyncBridge Node",
         private readonly tcpPort: number = TCP_PORT,
         private readonly connectionTimeoutMs: number = DEFAULT_CONNECTION_TIMEOUT_MS,
-        private readonly onEvent?: ProtocolEventListener
+        private readonly onEvent?: ProtocolEventListener,
+        onTransferEvent?: TransferEventListener
     ) {
         this.transferManager =
-            new TransferManager();
+            new TransferManager(onTransferEvent);
+    }
+
+    pauseTransfer(transferId: string): void {
+        this.transferManager.pauseTransfer(transferId);
+    }
+
+    resumeTransfer(transferId: string): void {
+        this.transferManager.resumeTransfer(transferId);
+    }
+
+    cancelTransfer(transferId: string): void {
+        this.transferManager.cancelTransfer(transferId);
     }
 
     async connectToDevice(

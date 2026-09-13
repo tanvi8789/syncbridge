@@ -3,7 +3,7 @@ import http from "node:http";
 import {
     NetworkingEngine,
 } from "networking";
-import type { ProtocolEvent } from "networking";
+import type { ProtocolEvent, TransferEvent } from "networking";
 
 const API_HOST = "127.0.0.1";
 const API_PORT = 41235;
@@ -139,9 +139,17 @@ async function start(): Promise<void> {
                             );
                         };
 
+                        const sendTransferEvent = (event: TransferEvent) => {
+                            response.write(
+                                `event: transfer-event\ndata: ${JSON.stringify(event)}\n\n`
+                            );
+                        };
+
                         networking.on("protocol-event", sendEvent);
+                        networking.on("transfer-event", sendTransferEvent);
                         request.on("close", () => {
                             networking.off("protocol-event", sendEvent);
+                            networking.off("transfer-event", sendTransferEvent);
                         });
 
                         return;
@@ -417,19 +425,32 @@ async function start(): Promise<void> {
                                 return;
                             }
 
-                            const transfer =
+                            const transferId =
                                 networking
                                     .requestFileTransfer(
                                         parsed.deviceId,
                                         parsed.filePath
                                     );
 
+                            if (!transferId) {
+                                response.writeHead(400);
+
+                                response.end(
+                                    JSON.stringify({
+                                        error:
+                                            "Failed to start transfer: file not found or not a file",
+                                    })
+                                );
+
+                                return;
+                            }
+
                             response.writeHead(201);
 
                             response.end(
-                                JSON.stringify(
-                                    transfer
-                                )
+                                JSON.stringify({
+                                    transferId,
+                                })
                             );
                         } catch (error) {
                             console.error(
@@ -445,6 +466,58 @@ async function start(): Promise<void> {
                                         error instanceof Error
                                             ? error.message
                                             : "Failed to start transfer",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    // -------------------------
+                    // Pause / resume / cancel a transfer
+                    // -------------------------
+
+                    const transferActionMatch =
+                        request.method === "POST" && request.url
+                            ? request.url.match(
+                                  /^\/api\/transfers\/([^/]+)\/(pause|resume|cancel)$/
+                              )
+                            : null;
+
+                    if (transferActionMatch) {
+                        const [, transferId, action] = transferActionMatch;
+
+                        try {
+                            if (action === "pause") {
+                                networking.pauseTransfer(transferId);
+                            } else if (action === "resume") {
+                                networking.resumeTransfer(transferId);
+                            } else {
+                                networking.cancelTransfer(transferId);
+                            }
+
+                            response.writeHead(200);
+
+                            response.end(
+                                JSON.stringify({
+                                    status: action,
+                                    transferId,
+                                })
+                            );
+                        } catch (error) {
+                            console.error(
+                                `[API] Transfer ${action} failed:`,
+                                error
+                            );
+
+                            response.writeHead(400);
+
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : `Failed to ${action} transfer`,
                                 })
                             );
                         }

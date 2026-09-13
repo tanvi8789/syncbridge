@@ -20,6 +20,8 @@ import {
     type ProtocolEvent,
 } from "./api";
 
+import { TransferVisualizer } from "./TransferVisualizer";
+
 import "./App.css";
 
 function App() {
@@ -52,6 +54,9 @@ function App() {
 
     const [protocolEvents, setProtocolEvents] =
         useState<ProtocolEvent[]>([]);
+
+    const [selectedTransferId, setSelectedTransferId] =
+        useState<string | null>(null);
 
     const loadData = useCallback(
         async () => {
@@ -651,9 +656,14 @@ function App() {
                             {transfers.map(
                                 (transfer) => (
                                     <div
-                                        className="transfer-row"
+                                        className="transfer-row transfer-row-clickable"
                                         key={
                                             transfer.transferId
+                                        }
+                                        onClick={() =>
+                                            setSelectedTransferId(
+                                                transfer.transferId
+                                            )
                                         }
                                     >
                                         <div className="file-icon">
@@ -700,11 +710,12 @@ function App() {
                                                 window.electronAPI?.showInFolder && (
                                                     <button
                                                         className="connect-button"
-                                                        onClick={() =>
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
                                                             window.electronAPI.showInFolder(
                                                                 transfer.savedPath!
-                                                            )
-                                                        }
+                                                            );
+                                                        }}
                                                     >
                                                         Show in Folder
                                                     </button>
@@ -717,6 +728,23 @@ function App() {
                     )}
                 </section>
             </main>
+
+            {selectedTransferId && (() => {
+                const selectedTransfer = transfers.find(
+                    (transfer) => transfer.transferId === selectedTransferId
+                );
+
+                if (!selectedTransfer) {
+                    return null;
+                }
+
+                return (
+                    <TransferVisualizer
+                        transfer={selectedTransfer}
+                        onClose={() => setSelectedTransferId(null)}
+                    />
+                );
+            })()}
         </div>
     );
 }

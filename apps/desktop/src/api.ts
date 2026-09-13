@@ -44,6 +44,29 @@ export interface Transfer {
     totalChunks: number;
     state: string;
     savedPath?: string;
+    chunksAcked: number;
+    bytesTransferred: number;
+    retryCount: number;
+    paused: boolean;
+    startedAt?: number;
+    lastProgressAt?: number;
+}
+
+export interface TransferEvent {
+    transferId: string;
+    type:
+        | "CHUNK_SENT"
+        | "CHUNK_ACKED"
+        | "CHUNK_RETRY"
+        | "TRANSFER_PAUSED"
+        | "TRANSFER_RESUMED"
+        | "TRANSFER_PROGRESS";
+    chunkIndex?: number;
+    chunksAcked: number;
+    totalChunks: number;
+    bytesTransferred: number;
+    fileSize: number;
+    timestamp: number;
 }
 
 async function fetchApi<T>(
@@ -170,6 +193,61 @@ export function startTransfer(
             }),
         }
     );
+}
+
+export function pauseTransfer(
+    transferId: string
+): Promise<{ status: string; transferId: string }> {
+    return fetchApi(
+        `/api/transfers/${transferId}/pause`,
+        { method: "POST" }
+    );
+}
+
+export function resumeTransfer(
+    transferId: string
+): Promise<{ status: string; transferId: string }> {
+    return fetchApi(
+        `/api/transfers/${transferId}/resume`,
+        { method: "POST" }
+    );
+}
+
+export function cancelTransfer(
+    transferId: string
+): Promise<{ status: string; transferId: string }> {
+    return fetchApi(
+        `/api/transfers/${transferId}/cancel`,
+        { method: "POST" }
+    );
+}
+
+export function subscribeToTransferEvents(
+    onEvent: (event: TransferEvent) => void,
+    onError?: () => void
+): () => void {
+    const events = new EventSource(
+        `${API_BASE_URL}/api/events`
+    );
+
+    events.addEventListener(
+        "transfer-event",
+        (message) => {
+            try {
+                onEvent(
+                    JSON.parse(
+                        (message as MessageEvent<string>).data
+                    ) as TransferEvent
+                );
+            } catch {
+                // Ignore a malformed event and keep the stream connected.
+            }
+        }
+    );
+
+    events.onerror = () => onError?.();
+
+    return () => events.close();
 }
 
 export function subscribeToProtocolEvents(

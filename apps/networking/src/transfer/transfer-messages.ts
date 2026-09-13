@@ -6,9 +6,13 @@ export enum TransferMessageType {
     FILE_METADATA = "FILE_METADATA",
 
     FILE_CHUNK = "FILE_CHUNK",
+    FILE_CHUNK_ACK = "FILE_CHUNK_ACK",
 
     FILE_TRANSFER_COMPLETE = "FILE_TRANSFER_COMPLETE",
     FILE_TRANSFER_ACK = "FILE_TRANSFER_ACK",
+
+    FILE_TRANSFER_PAUSE = "FILE_TRANSFER_PAUSE",
+    FILE_TRANSFER_RESUME = "FILE_TRANSFER_RESUME",
 
     FILE_TRANSFER_CANCEL = "FILE_TRANSFER_CANCEL",
     FILE_TRANSFER_ERROR = "FILE_TRANSFER_ERROR",
@@ -76,6 +80,35 @@ export interface FileChunk {
     totalChunks: number;
 
     data: string;
+
+    timestamp: number;
+}
+
+export interface FileChunkAck {
+    type: TransferMessageType.FILE_CHUNK_ACK;
+    version: string;
+
+    transferId: string;
+
+    chunkIndex: number;
+
+    timestamp: number;
+}
+
+export interface FileTransferPause {
+    type: TransferMessageType.FILE_TRANSFER_PAUSE;
+    version: string;
+
+    transferId: string;
+
+    timestamp: number;
+}
+
+export interface FileTransferResume {
+    type: TransferMessageType.FILE_TRANSFER_RESUME;
+    version: string;
+
+    transferId: string;
 
     timestamp: number;
 }

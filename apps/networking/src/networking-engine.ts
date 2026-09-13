@@ -4,6 +4,7 @@ import { ConnectionManager } from "./connection/connection-manager";
 import { TcpServer } from "./connection/tcp-server";
 import { EventEmitter } from "node:events";
 import type { ProtocolEvent } from "./protocol-event";
+import type { TransferEvent } from "./transfer/transfer-event";
 
 export class NetworkingEngine extends EventEmitter {
     readonly deviceIdentity: DeviceIdentity;
@@ -28,7 +29,8 @@ export class NetworkingEngine extends EventEmitter {
                 this.deviceIdentity.deviceName,
                 undefined,
                 undefined,
-                (event) => this.publishEvent(event)
+                (event) => this.publishEvent(event),
+                (event) => this.publishTransferEvent(event)
             );
 
         this.tcpServer =
@@ -95,7 +97,23 @@ export class NetworkingEngine extends EventEmitter {
         );
     }
 
+    pauseTransfer(transferId: string): void {
+        this.connectionManager.pauseTransfer(transferId);
+    }
+
+    resumeTransfer(transferId: string): void {
+        this.connectionManager.resumeTransfer(transferId);
+    }
+
+    cancelTransfer(transferId: string): void {
+        this.connectionManager.cancelTransfer(transferId);
+    }
+
     private publishEvent(event: ProtocolEvent): void {
         this.emit("protocol-event", event);
+    }
+
+    private publishTransferEvent(event: TransferEvent): void {
+        this.emit("transfer-event", event);
     }
 }

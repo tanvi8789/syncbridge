@@ -10,8 +10,12 @@ import {
     type FileTransferReject,
     type FileMetadata,
     type FileChunk,
+    type FileChunkAck,
     type FileTransferComplete,
     type FileTransferAck,
+    type FileTransferPause,
+    type FileTransferResume,
+    type FileTransferCancel,
 } from "./transfer-messages";
 
 import {
@@ -37,6 +41,10 @@ import type {
     Transfer,
 } from "./transfer-state";
 
+import type {
+    TransferEventListener,
+} from "./transfer-event";
+
 interface OutgoingTransfer {
     transfer: Transfer;
     filePath: string;
@@ -53,12 +61,14 @@ export class TransferManager {
     private sender: TransferSender;
     private receiver: TransferReceiver;
 
-    constructor() {
+    constructor(
+        private readonly onEvent?: TransferEventListener
+    ) {
         this.sender =
-            new TransferSender();
+            new TransferSender(onEvent);
 
         this.receiver =
-            new TransferReceiver(this.transfers);
+            new TransferReceiver(this.transfers, onEvent);
     }
 
     /**
@@ -126,6 +136,11 @@ export class TransferManager {
             fileSize,
 
             totalChunks,
+
+            chunksAcked: 0,
+            bytesTransferred: 0,
+            retryCount: 0,
+            paused: false,
 
             state: "REQUESTED",
         };
@@ -234,6 +249,126 @@ export class TransferManager {
     }
 
     /**
+     * Pause a transfer this device is sending. Only meaningful for
+     * outgoing transfers, since the sender is the only side that
+     * actually controls whether chunks keep flowing.
+     */
+    pauseTransfer(
+        transferId: string
+    ): void {
+        const outgoing =
+            this.outgoingTransfers.get(
+                transferId
+            );
+
+        if (!outgoing) {
+            throw new Error(
+                `No outgoing transfer to pause: ${transferId}`
+            );
+        }
+
+        const { transfer, socket } = outgoing;
+
+        transfer.state = "PAUSED";
+        transfer.paused = true;
+
+        this.sender.pause(transferId);
+
+        const pause: FileTransferPause = {
+            type: TransferMessageType.FILE_TRANSFER_PAUSE,
+            version: TRANSFER_VERSION,
+            transferId,
+            timestamp: Date.now(),
+        };
+
+        this.sendMessage(socket, pause);
+
+        this.onEvent?.({
+            transferId,
+            type: "TRANSFER_PAUSED",
+            chunksAcked: transfer.chunksAcked,
+            totalChunks: transfer.totalChunks,
+            bytesTransferred: transfer.bytesTransferred,
+            fileSize: transfer.fileSize,
+            timestamp: Date.now(),
+        });
+    }
+
+    resumeTransfer(
+        transferId: string
+    ): void {
+        const outgoing =
+            this.outgoingTransfers.get(
+                transferId
+            );
+
+        if (!outgoing) {
+            throw new Error(
+                `No outgoing transfer to resume: ${transferId}`
+            );
+        }
+
+        const { transfer, socket } = outgoing;
+
+        transfer.state = "TRANSFERRING";
+        transfer.paused = false;
+
+        this.sender.resume(transferId);
+
+        const resume: FileTransferResume = {
+            type: TransferMessageType.FILE_TRANSFER_RESUME,
+            version: TRANSFER_VERSION,
+            transferId,
+            timestamp: Date.now(),
+        };
+
+        this.sendMessage(socket, resume);
+
+        this.onEvent?.({
+            transferId,
+            type: "TRANSFER_RESUMED",
+            chunksAcked: transfer.chunksAcked,
+            totalChunks: transfer.totalChunks,
+            bytesTransferred: transfer.bytesTransferred,
+            fileSize: transfer.fileSize,
+            timestamp: Date.now(),
+        });
+    }
+
+    cancelTransfer(
+        transferId: string
+    ): void {
+        const outgoing =
+            this.outgoingTransfers.get(
+                transferId
+            );
+
+        if (!outgoing) {
+            throw new Error(
+                `No outgoing transfer to cancel: ${transferId}`
+            );
+        }
+
+        const { transfer, socket } = outgoing;
+
+        this.sender.cancel(transferId);
+
+        transfer.state = "CANCELLED";
+
+        const cancel: FileTransferCancel = {
+            type: TransferMessageType.FILE_TRANSFER_CANCEL,
+            version: TRANSFER_VERSION,
+            transferId,
+            reason: "Cancelled by sender",
+            timestamp: Date.now(),
+        };
+
+        this.sendMessage(socket, cancel);
+
+        this.outgoingTransfers.delete(transferId);
+    }
+
+    /**
      * Route incoming transfer messages
      * to the appropriate component.
      */
@@ -285,7 +420,15 @@ export class TransferManager {
 
             case TransferMessageType.FILE_CHUNK:
                 this.receiver.handleChunk(
+                    socket,
                     message as FileChunk
+                );
+
+                break;
+
+            case TransferMessageType.FILE_CHUNK_ACK:
+                this.handleChunkAck(
+                    message as FileChunkAck
                 );
 
                 break;
@@ -301,6 +444,27 @@ export class TransferManager {
             case TransferMessageType.FILE_TRANSFER_ACK:
                 this.handleTransferAck(
                     message as FileTransferAck
+                );
+
+                break;
+
+            case TransferMessageType.FILE_TRANSFER_PAUSE:
+                this.handleRemotePause(
+                    message as FileTransferPause
+                );
+
+                break;
+
+            case TransferMessageType.FILE_TRANSFER_RESUME:
+                this.handleRemoteResume(
+                    message as FileTransferResume
+                );
+
+                break;
+
+            case TransferMessageType.FILE_TRANSFER_CANCEL:
+                this.handleRemoteCancel(
+                    message as FileTransferCancel
                 );
 
                 break;
@@ -342,6 +506,10 @@ export class TransferManager {
             fileName: request.fileName,
             fileSize: 0,
             totalChunks: 0,
+            chunksAcked: 0,
+            bytesTransferred: 0,
+            retryCount: 0,
+            paused: false,
             state: "REQUESTED",
         });
 
@@ -481,6 +649,132 @@ export class TransferManager {
         this.outgoingTransfers.delete(
             message.transferId
         );
+    }
+
+    /**
+     * A FILE_CHUNK_ACK confirms delivery of a chunk we sent. Acks
+     * arrive in order (the receiver processes chunks as TCP delivers
+     * them), so the acked index is a safe cumulative progress marker.
+     */
+    private handleChunkAck(
+        ack: FileChunkAck
+    ): void {
+        const transfer =
+            this.transfers.get(
+                ack.transferId
+            );
+
+        if (!transfer) {
+            return;
+        }
+
+        const chunksAcked =
+            ack.chunkIndex + 1;
+
+        if (chunksAcked > transfer.chunksAcked) {
+            transfer.chunksAcked = chunksAcked;
+
+            transfer.bytesTransferred =
+                Math.min(
+                    chunksAcked * CHUNK_SIZE,
+                    transfer.fileSize
+                );
+
+            transfer.lastProgressAt = Date.now();
+        }
+
+        this.sender.notifyAck(ack.transferId);
+
+        this.onEvent?.({
+            transferId: ack.transferId,
+            type: "CHUNK_ACKED",
+            chunkIndex: ack.chunkIndex,
+            chunksAcked: transfer.chunksAcked,
+            totalChunks: transfer.totalChunks,
+            bytesTransferred: transfer.bytesTransferred,
+            fileSize: transfer.fileSize,
+            timestamp: Date.now(),
+        });
+    }
+
+    /**
+     * The peer paused/resumed the transfer it's sending us; reflect
+     * that in our own view so this device's UI shows it accurately.
+     */
+    private handleRemotePause(
+        message: FileTransferPause
+    ): void {
+        const transfer =
+            this.transfers.get(
+                message.transferId
+            );
+
+        if (!transfer) {
+            return;
+        }
+
+        transfer.state = "PAUSED";
+        transfer.paused = true;
+
+        this.onEvent?.({
+            transferId: message.transferId,
+            type: "TRANSFER_PAUSED",
+            chunksAcked: transfer.chunksAcked,
+            totalChunks: transfer.totalChunks,
+            bytesTransferred: transfer.bytesTransferred,
+            fileSize: transfer.fileSize,
+            timestamp: Date.now(),
+        });
+    }
+
+    private handleRemoteResume(
+        message: FileTransferResume
+    ): void {
+        const transfer =
+            this.transfers.get(
+                message.transferId
+            );
+
+        if (!transfer) {
+            return;
+        }
+
+        transfer.state = "TRANSFERRING";
+        transfer.paused = false;
+
+        this.onEvent?.({
+            transferId: message.transferId,
+            type: "TRANSFER_RESUMED",
+            chunksAcked: transfer.chunksAcked,
+            totalChunks: transfer.totalChunks,
+            bytesTransferred: transfer.bytesTransferred,
+            fileSize: transfer.fileSize,
+            timestamp: Date.now(),
+        });
+    }
+
+    private handleRemoteCancel(
+        message: FileTransferCancel
+    ): void {
+        console.log(
+            `[TRANSFER] FILE_TRANSFER_CANCEL received: ${message.reason}`
+        );
+
+        const transfer =
+            this.transfers.get(
+                message.transferId
+            );
+
+        if (transfer) {
+            transfer.state = "CANCELLED";
+        }
+
+        if (this.outgoingTransfers.has(message.transferId)) {
+            this.sender.cancel(message.transferId);
+            this.outgoingTransfers.delete(message.transferId);
+        } else {
+            this.receiver.handleCancel(message.transferId);
+        }
     }
 
     getTransfer(
