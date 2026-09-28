@@ -27,6 +27,16 @@ export interface FileTransferRequest {
     senderDeviceId: string;
     fileName: string;
 
+    /**
+     * Present when this transfer was queued by the sync engine
+     * rather than a manual send. `relativePath` locates the file
+     * inside the sync pair's folder (not just its basename), and
+     * `sourceModifiedAt` is used for conflict detection on write.
+     */
+    syncPairId?: string;
+    relativePath?: string;
+    sourceModifiedAt?: number;
+
     timestamp: number;
 }
 
@@ -66,6 +76,10 @@ export interface FileMetadata {
     totalChunks: number;
 
     checksum: string;
+
+    syncPairId?: string;
+    relativePath?: string;
+    sourceModifiedAt?: number;
 
     timestamp: number;
 }

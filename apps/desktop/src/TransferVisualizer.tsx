@@ -32,6 +32,74 @@ const CHUNK_COLORS: Record<number, string> = {
     [CHUNK_RETRIED]: "#a83232",
 };
 
+const LEGEND_ITEMS: Array<{ state: number; label: string }> = [
+    { state: CHUNK_PENDING, label: "Waiting" },
+    { state: CHUNK_SENT, label: "Sent" },
+    { state: CHUNK_ACKED, label: "Confirmed" },
+    { state: CHUNK_RETRIED, label: "Retried" },
+];
+
+/*
+ * Pipeline steps a transfer visibly moves through. "Verifying" has no
+ * matching server-side state — it's a UI-only beat shown once every
+ * chunk is acked but the transfer hasn't flipped to COMPLETED yet, so
+ * beginners see the checksum step rather than a stall.
+ */
+const STEPS: Array<{ key: string; label: string }> = [
+    { key: "REQUESTED", label: "Requested" },
+    { key: "ACCEPTED", label: "Accepted" },
+    { key: "TRANSFERRING", label: "Transferring" },
+    { key: "VERIFYING", label: "Verifying" },
+    { key: "COMPLETED", label: "Complete" },
+];
+
+function getStepIndex(state: string, progressRatio: number): number {
+    if (state === "REQUESTED") return 0;
+    if (state === "ACCEPTED") return 1;
+    if (state === "TRANSFERRING" || state === "PAUSED") {
+        return progressRatio >= 1 ? 3 : 2;
+    }
+    if (state === "COMPLETED") return 4;
+    return -1;
+}
+
+function describeEvent(
+    event: TransferEvent,
+    totalChunks: number
+): string | null {
+    switch (event.type) {
+        case "CHUNK_SENT":
+            return typeof event.chunkIndex === "number"
+                ? `Sending chunk ${event.chunkIndex + 1} of ${totalChunks.toLocaleString()}…`
+                : null;
+        case "CHUNK_ACKED":
+            return typeof event.chunkIndex === "number"
+                ? `Chunk ${event.chunkIndex + 1} confirmed by peer`
+                : `Transferring… ${event.chunksAcked.toLocaleString()}/${totalChunks.toLocaleString()} chunks confirmed`;
+        case "CHUNK_RETRY":
+            return typeof event.chunkIndex === "number"
+                ? `Chunk ${event.chunkIndex + 1} timed out — retrying`
+                : null;
+        case "TRANSFER_PAUSED":
+            return "Transfer paused";
+        case "TRANSFER_RESUMED":
+            return "Transfer resumed";
+        case "TRANSFER_PROGRESS":
+            return `Transferring… ${event.chunksAcked.toLocaleString()}/${totalChunks.toLocaleString()} chunks confirmed`;
+        default:
+            return null;
+    }
+}
+
+function initialNarration(transfer: Transfer): string {
+    if (transfer.state === "COMPLETED") return "Transfer complete";
+    if (transfer.state === "CANCELLED") return "Transfer cancelled";
+    if (transfer.state === "REJECTED") return "Transfer rejected";
+    if (transfer.state === "REQUESTED") return "Waiting for peer to accept…";
+    if (transfer.state === "PAUSED") return "Transfer paused";
+    return "Starting transfer…";
+}
+
 interface Props {
     transfer: Transfer;
     onClose: () => void;
@@ -62,6 +130,7 @@ export function TransferVisualizer({ transfer, onClose }: Props) {
     const [speedBps, setSpeedBps] = useState(0);
     const [actionError, setActionError] = useState<string | null>(null);
     const [actionPending, setActionPending] = useState(false);
+    const [narration, setNarration] = useState(() => initialNarration(transfer));
 
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -74,6 +143,8 @@ export function TransferVisualizer({ transfer, onClose }: Props) {
 
     const dirtyRef = useRef(true);
     const samplesRef = useRef<Sample[]>([]);
+    const narrationRef = useRef(narration);
+    const narrationDirtyRef = useRef(false);
 
     const canControl =
         transfer.direction === "sent";
@@ -107,6 +178,12 @@ export function TransferVisualizer({ transfer, onClose }: Props) {
                 }
 
                 dirtyRef.current = true;
+            }
+
+            const description = describeEvent(event, totalChunks);
+            if (description) {
+                narrationRef.current = description;
+                narrationDirtyRef.current = true;
             }
 
             if (
@@ -164,6 +241,11 @@ export function TransferVisualizer({ transfer, onClose }: Props) {
                 dirtyRef.current = false;
             }
 
+            if (narrationDirtyRef.current) {
+                setNarration(narrationRef.current);
+                narrationDirtyRef.current = false;
+            }
+
             const samples = samplesRef.current;
             if (samples.length >= 2) {
                 const first = samples[0];
@@ -205,6 +287,10 @@ export function TransferVisualizer({ transfer, onClose }: Props) {
 
     const isActive =
         live.state === "TRANSFERRING" && !live.paused;
+
+    const stepIndex = getStepIndex(live.state, progressRatio);
+    const isTerminalError =
+        live.state === "CANCELLED" || live.state === "REJECTED";
 
     const handlePauseResume = async () => {
         setActionError(null);
@@ -260,6 +346,26 @@ export function TransferVisualizer({ transfer, onClose }: Props) {
                     </button>
                 </div>
 
+                {isTerminalError ? (
+                    <div className="visualizer-step-error">
+                        {live.state === "CANCELLED" ? "Transfer cancelled" : "Transfer rejected"}
+                    </div>
+                ) : (
+                    <div className="visualizer-steps">
+                        {STEPS.map((step, index) => (
+                            <div
+                                key={step.key}
+                                className={`visualizer-step ${
+                                    index < stepIndex ? "done" : index === stepIndex ? "active" : ""
+                                }`}
+                            >
+                                <span className="visualizer-step-dot" />
+                                <span className="visualizer-step-label">{step.label}</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
                 <div className="connection-diagram">
                     <div className="connection-node">
                         {transfer.direction === "sent" ? "You" : "Peer"}
@@ -279,8 +385,22 @@ export function TransferVisualizer({ transfer, onClose }: Props) {
                     </div>
                 </div>
 
+                <p className="visualizer-narration">{narration}</p>
+
                 <div className="chunk-grid-wrapper">
                     <canvas ref={canvasRef} className="chunk-grid-canvas" />
+                </div>
+
+                <div className="visualizer-legend">
+                    {LEGEND_ITEMS.map((item) => (
+                        <span className="legend-item" key={item.state}>
+                            <span
+                                className="legend-swatch"
+                                style={{ background: CHUNK_COLORS[item.state] }}
+                            />
+                            {item.label}
+                        </span>
+                    ))}
                 </div>
 
                 <div className="visualizer-stats">

@@ -40,5 +40,15 @@ export interface Transfer {
     startedAt?: number;
     lastProgressAt?: number;
 
+    /**
+     * Present when this transfer was queued by the sync engine
+     * rather than a manual send, so the UI can label it accordingly.
+     */
+    syncPairId?: string;
+    relativePath?: string;
+
+    /** Threads this transfer back to the connection session it happened over. */
+    sessionId?: string;
+
     state: TransferState;
 }

@@ -50,6 +50,35 @@ export interface Transfer {
     paused: boolean;
     startedAt?: number;
     lastProgressAt?: number;
+
+    syncPairId?: string;
+    relativePath?: string;
+    sessionId?: string;
+}
+
+export interface SyncPair {
+    pairId: string;
+    name: string;
+    peerDeviceId: string;
+    localFolder: string;
+    status: "PENDING" | "ACTIVE" | "REJECTED" | "REMOVED";
+    createdAt: number;
+    lastSyncAt?: number;
+    sessionId?: string;
+}
+
+export interface SyncEvent {
+    pairId: string;
+    type:
+        | "PAIR_CREATED"
+        | "PAIR_REMOVED"
+        | "SCAN_COMPLETE"
+        | "FILE_QUEUED"
+        | "FILE_DELETED"
+        | "CONFLICT";
+    relativePath?: string;
+    timestamp: number;
+    sessionId?: string;
 }
 
 export interface TransferEvent {
@@ -60,13 +89,50 @@ export interface TransferEvent {
         | "CHUNK_RETRY"
         | "TRANSFER_PAUSED"
         | "TRANSFER_RESUMED"
-        | "TRANSFER_PROGRESS";
+        | "TRANSFER_PROGRESS"
+        | "TRANSFER_REQUESTED"
+        | "TRANSFER_VERIFIED"
+        | "TRANSFER_COMPLETED";
     chunkIndex?: number;
     chunksAcked: number;
     totalChunks: number;
     bytesTransferred: number;
     fileSize: number;
     timestamp: number;
+    sessionId?: string;
+}
+
+export type SessionStatus =
+    | "connecting"
+    | "active"
+    | "closed"
+    | "rejected"
+    | "failed";
+
+export interface SessionSummary {
+    sessionId: string;
+    peerDeviceId: string;
+    peerDeviceName?: string;
+    startedAt: number;
+    endedAt: number | null;
+    status: SessionStatus;
+}
+
+export type TimelineStage =
+    | "discovery"
+    | "connection"
+    | "authentication"
+    | "metadata"
+    | "chunk-transfer"
+    | "verification"
+    | "completion"
+    | "sync";
+
+export interface TimelineEntry {
+    stage: TimelineStage;
+    source: "protocol" | "transfer" | "sync";
+    timestamp: number;
+    event: ProtocolEvent | TransferEvent | SyncEvent;
 }
 
 async function fetchApi<T>(
@@ -250,6 +316,79 @@ export function subscribeToTransferEvents(
     return () => events.close();
 }
 
+export function getSyncPairs(): Promise<SyncPair[]> {
+    return fetchApi<SyncPair[]>(
+        "/api/sync-pairs"
+    );
+}
+
+export function createSyncPair(
+    peerDeviceId: string,
+    localFolder: string,
+    name: string
+): Promise<SyncPair> {
+    return fetchApi<SyncPair>(
+        "/api/sync-pairs",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                peerDeviceId,
+                localFolder,
+                name,
+            }),
+        }
+    );
+}
+
+export function removeSyncPair(
+    pairId: string
+): Promise<{ status: string; pairId: string }> {
+    return fetchApi(
+        `/api/sync-pairs/${pairId}`,
+        { method: "DELETE" }
+    );
+}
+
+export function syncNow(
+    pairId: string
+): Promise<{ status: string; pairId: string }> {
+    return fetchApi(
+        `/api/sync-pairs/${pairId}/sync-now`,
+        { method: "POST" }
+    );
+}
+
+export function subscribeToSyncEvents(
+    onEvent: (event: SyncEvent) => void,
+    onError?: () => void
+): () => void {
+    const events = new EventSource(
+        `${API_BASE_URL}/api/events`
+    );
+
+    events.addEventListener(
+        "sync-event",
+        (message) => {
+            try {
+                onEvent(
+                    JSON.parse(
+                        (message as MessageEvent<string>).data
+                    ) as SyncEvent
+                );
+            } catch {
+                // Ignore a malformed event and keep the stream connected.
+            }
+        }
+    );
+
+    events.onerror = () => onError?.();
+
+    return () => events.close();
+}
+
 export function subscribeToProtocolEvents(
     onEvent: (event: ProtocolEvent) => void,
     onError?: () => void
@@ -276,4 +415,18 @@ export function subscribeToProtocolEvents(
     events.onerror = () => onError?.();
 
     return () => events.close();
+}
+
+export function getSessions(): Promise<SessionSummary[]> {
+    return fetchApi<SessionSummary[]>(
+        "/api/sessions"
+    );
+}
+
+export function getSessionTimeline(
+    sessionId: string
+): Promise<TimelineEntry[]> {
+    return fetchApi<TimelineEntry[]>(
+        `/api/sessions/${sessionId}/timeline`
+    );
 }

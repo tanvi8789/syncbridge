@@ -9,6 +9,9 @@ declare global {
             showInFolder(
                 filePath: string
             ): Promise<void>;
+            selectFolder(): Promise<
+                string | null
+            >;
         };
     }
 }

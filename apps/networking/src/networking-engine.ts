@@ -5,12 +5,15 @@ import { TcpServer } from "./connection/tcp-server";
 import { EventEmitter } from "node:events";
 import type { ProtocolEvent } from "./protocol-event";
 import type { TransferEvent } from "./transfer/transfer-event";
+import type { SyncEvent } from "./sync/sync-event";
+import { SessionStore } from "./session/session-store";
 
 export class NetworkingEngine extends EventEmitter {
     readonly deviceIdentity: DeviceIdentity;
     readonly discovery: DiscoveryService;
     readonly connectionManager: ConnectionManager;
     readonly tcpServer: TcpServer;
+    private readonly sessionStore: SessionStore;
 
     constructor() {
         super();
@@ -30,7 +33,8 @@ export class NetworkingEngine extends EventEmitter {
                 undefined,
                 undefined,
                 (event) => this.publishEvent(event),
-                (event) => this.publishTransferEvent(event)
+                (event) => this.publishTransferEvent(event),
+                (event) => this.publishSyncEvent(event)
             );
 
         this.tcpServer =
@@ -42,6 +46,16 @@ export class NetworkingEngine extends EventEmitter {
                         );
                 }
             );
+
+        this.sessionStore = new SessionStore(this);
+    }
+
+    getSessions() {
+        return this.sessionStore.getSessions();
+    }
+
+    getSessionTimeline(sessionId: string) {
+        return this.sessionStore.getSessionTimeline(sessionId);
     }
 
     async start(): Promise<void> {
@@ -109,11 +123,39 @@ export class NetworkingEngine extends EventEmitter {
         this.connectionManager.cancelTransfer(transferId);
     }
 
+    createSyncPair(
+        peerDeviceId: string,
+        localFolder: string,
+        name: string
+    ) {
+        return this.connectionManager.createSyncPair(
+            peerDeviceId,
+            localFolder,
+            name
+        );
+    }
+
+    removeSyncPair(pairId: string): void {
+        this.connectionManager.removeSyncPair(pairId);
+    }
+
+    syncNow(pairId: string): void {
+        this.connectionManager.syncNow(pairId);
+    }
+
+    getSyncPairs() {
+        return this.connectionManager.getSyncPairs();
+    }
+
     private publishEvent(event: ProtocolEvent): void {
         this.emit("protocol-event", event);
     }
 
     private publishTransferEvent(event: TransferEvent): void {
         this.emit("transfer-event", event);
+    }
+
+    private publishSyncEvent(event: SyncEvent): void {
+        this.emit("sync-event", event);
     }
 }

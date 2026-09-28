@@ -142,6 +142,12 @@ export class TransferSender {
 
                 checksum,
 
+                syncPairId: transfer.syncPairId,
+                relativePath: transfer.relativePath,
+                sourceModifiedAt: transfer.syncPairId
+                    ? stats.mtimeMs
+                    : undefined,
+
                 timestamp:
                     Date.now(),
             };
@@ -545,6 +551,9 @@ export class TransferSender {
 
             timestamp:
                 Date.now(),
+
+            sessionId:
+                transfer.sessionId,
         };
     }
 

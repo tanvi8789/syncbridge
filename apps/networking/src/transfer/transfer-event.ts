@@ -4,7 +4,10 @@ export type TransferEventType =
     | "CHUNK_RETRY"
     | "TRANSFER_PAUSED"
     | "TRANSFER_RESUMED"
-    | "TRANSFER_PROGRESS";
+    | "TRANSFER_PROGRESS"
+    | "TRANSFER_REQUESTED"
+    | "TRANSFER_VERIFIED"
+    | "TRANSFER_COMPLETED";
 
 export interface TransferEvent {
     transferId: string;
@@ -22,6 +25,9 @@ export interface TransferEvent {
     fileSize: number;
 
     timestamp: number;
+
+    /** Threads this event back to the connection session it happened over. */
+    sessionId?: string;
 }
 
 export type TransferEventListener = (event: TransferEvent) => void;

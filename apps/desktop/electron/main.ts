@@ -66,6 +66,17 @@ ipcMain.handle("show-in-folder", (_event, filePath: string) => {
     shell.showItemInFolder(filePath);
 });
 
+ipcMain.handle("select-folder", async () => {
+    const result = (await dialog.showOpenDialog({
+        properties: ["openDirectory", "createDirectory"],
+    })) as unknown as { canceled: boolean; filePaths: string[] };
+
+    if (result.canceled || result.filePaths.length === 0) {
+        return null;
+    }
+    return result.filePaths[0];
+});
+
 app.whenReady().then(() => {
     createWindow();
 

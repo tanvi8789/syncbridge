@@ -3,7 +3,7 @@ import http from "node:http";
 import {
     NetworkingEngine,
 } from "networking";
-import type { ProtocolEvent, TransferEvent } from "networking";
+import type { ProtocolEvent, TransferEvent, SyncEvent } from "networking";
 
 const API_HOST = "127.0.0.1";
 const API_PORT = 41235;
@@ -145,11 +145,19 @@ async function start(): Promise<void> {
                             );
                         };
 
+                        const sendSyncEvent = (event: SyncEvent) => {
+                            response.write(
+                                `event: sync-event\ndata: ${JSON.stringify(event)}\n\n`
+                            );
+                        };
+
                         networking.on("protocol-event", sendEvent);
                         networking.on("transfer-event", sendTransferEvent);
+                        networking.on("sync-event", sendSyncEvent);
                         request.on("close", () => {
                             networking.off("protocol-event", sendEvent);
                             networking.off("transfer-event", sendTransferEvent);
+                            networking.off("sync-event", sendSyncEvent);
                         });
 
                         return;
@@ -469,6 +477,199 @@ async function start(): Promise<void> {
                                 })
                             );
                         }
+
+                        return;
+                    }
+
+                    // -------------------------
+                    // Sync pairs
+                    // -------------------------
+
+                    if (
+                        request.method === "GET" &&
+                        request.url === "/api/sync-pairs"
+                    ) {
+                        response.writeHead(200);
+
+                        response.end(
+                            JSON.stringify(
+                                networking.getSyncPairs()
+                            )
+                        );
+
+                        return;
+                    }
+
+                    if (
+                        request.method === "POST" &&
+                        request.url === "/api/sync-pairs"
+                    ) {
+                        try {
+                            const body =
+                                await readBody(request);
+
+                            const parsed =
+                                JSON.parse(body);
+
+                            if (
+                                typeof parsed.peerDeviceId !== "string" ||
+                                typeof parsed.localFolder !== "string" ||
+                                typeof parsed.name !== "string"
+                            ) {
+                                response.writeHead(400);
+
+                                response.end(
+                                    JSON.stringify({
+                                        error:
+                                            "peerDeviceId, localFolder, and name are required",
+                                    })
+                                );
+
+                                return;
+                            }
+
+                            const pair = networking.createSyncPair(
+                                parsed.peerDeviceId,
+                                parsed.localFolder,
+                                parsed.name
+                            );
+
+                            response.writeHead(201);
+
+                            response.end(
+                                JSON.stringify(pair)
+                            );
+                        } catch (error) {
+                            console.error(
+                                "[API] Failed to create sync pair:",
+                                error
+                            );
+
+                            response.writeHead(400);
+
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Failed to create sync pair",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    const syncPairActionMatch =
+                        request.method === "POST" && request.url
+                            ? request.url.match(
+                                  /^\/api\/sync-pairs\/([^/]+)\/sync-now$/
+                              )
+                            : null;
+
+                    if (syncPairActionMatch) {
+                        const [, pairId] = syncPairActionMatch;
+
+                        try {
+                            networking.syncNow(pairId);
+
+                            response.writeHead(200);
+
+                            response.end(
+                                JSON.stringify({
+                                    status: "syncing",
+                                    pairId,
+                                })
+                            );
+                        } catch (error) {
+                            response.writeHead(400);
+
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Failed to sync",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    const removeSyncPairMatch =
+                        request.method === "DELETE" && request.url
+                            ? request.url.match(
+                                  /^\/api\/sync-pairs\/([^/]+)$/
+                              )
+                            : null;
+
+                    if (removeSyncPairMatch) {
+                        const [, pairId] = removeSyncPairMatch;
+
+                        try {
+                            networking.removeSyncPair(pairId);
+
+                            response.writeHead(200);
+
+                            response.end(
+                                JSON.stringify({
+                                    status: "removed",
+                                    pairId,
+                                })
+                            );
+                        } catch (error) {
+                            response.writeHead(400);
+
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Failed to remove sync pair",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    // -------------------------
+                    // Protocol timeline / sessions
+                    // -------------------------
+
+                    if (
+                        request.method === "GET" &&
+                        request.url === "/api/sessions"
+                    ) {
+                        response.writeHead(200);
+
+                        response.end(
+                            JSON.stringify(
+                                networking.getSessions()
+                            )
+                        );
+
+                        return;
+                    }
+
+                    const sessionTimelineMatch =
+                        request.method === "GET" && request.url
+                            ? request.url.match(
+                                  /^\/api\/sessions\/([^/]+)\/timeline$/
+                              )
+                            : null;
+
+                    if (sessionTimelineMatch) {
+                        const [, sessionId] = sessionTimelineMatch;
+
+                        response.writeHead(200);
+
+                        response.end(
+                            JSON.stringify(
+                                networking.getSessionTimeline(sessionId)
+                            )
+                        );
 
                         return;
                     }

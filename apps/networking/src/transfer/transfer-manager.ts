@@ -62,13 +62,26 @@ export class TransferManager {
     private receiver: TransferReceiver;
 
     constructor(
-        private readonly onEvent?: TransferEventListener
+        private readonly onEvent?: TransferEventListener,
+        getSyncFolder?: (syncPairId: string) => string | undefined,
+        onSyncConflict?: (info: {
+            transferId: string;
+            syncPairId: string;
+            relativePath: string;
+            conflictPath: string;
+        }) => void,
+        private readonly getSessionId?: (peerDeviceId: string) => string | undefined
     ) {
         this.sender =
             new TransferSender(onEvent);
 
         this.receiver =
-            new TransferReceiver(this.transfers, onEvent);
+            new TransferReceiver(
+                this.transfers,
+                onEvent,
+                getSyncFolder,
+                onSyncConflict
+            );
     }
 
     /**
@@ -79,7 +92,8 @@ export class TransferManager {
         socket: net.Socket,
         senderDeviceId: string,
         filePath: string,
-        peerDeviceId: string
+        peerDeviceId: string,
+        syncInfo?: { syncPairId: string; relativePath: string }
     ): string | undefined {
         /*
          * Make sure the file exists.
@@ -125,6 +139,8 @@ export class TransferManager {
                 fileSize / CHUNK_SIZE
             );
 
+        const sessionId = this.getSessionId?.(peerDeviceId);
+
         const transfer: Transfer = {
             transferId,
 
@@ -141,6 +157,10 @@ export class TransferManager {
             bytesTransferred: 0,
             retryCount: 0,
             paused: false,
+
+            syncPairId: syncInfo?.syncPairId,
+            relativePath: syncInfo?.relativePath,
+            sessionId,
 
             state: "REQUESTED",
         };
@@ -159,6 +179,17 @@ export class TransferManager {
             }
         );
 
+        this.onEvent?.({
+            transferId,
+            type: "TRANSFER_REQUESTED",
+            sessionId,
+            chunksAcked: 0,
+            totalChunks,
+            bytesTransferred: 0,
+            fileSize,
+            timestamp: Date.now(),
+        });
+
         const request:
             FileTransferRequest = {
             type:
@@ -172,6 +203,10 @@ export class TransferManager {
             senderDeviceId,
 
             fileName,
+
+            syncPairId: syncInfo?.syncPairId,
+            relativePath: syncInfo?.relativePath,
+            sourceModifiedAt: syncInfo ? stats.mtimeMs : undefined,
 
             timestamp:
                 Date.now(),
@@ -286,6 +321,7 @@ export class TransferManager {
         this.onEvent?.({
             transferId,
             type: "TRANSFER_PAUSED",
+            sessionId: transfer.sessionId,
             chunksAcked: transfer.chunksAcked,
             totalChunks: transfer.totalChunks,
             bytesTransferred: transfer.bytesTransferred,
@@ -327,6 +363,7 @@ export class TransferManager {
         this.onEvent?.({
             transferId,
             type: "TRANSFER_RESUMED",
+            sessionId: transfer.sessionId,
             chunksAcked: transfer.chunksAcked,
             totalChunks: transfer.totalChunks,
             bytesTransferred: transfer.bytesTransferred,
@@ -499,6 +536,8 @@ export class TransferManager {
          * fileSize/totalChunks/checksum are filled in once FILE_METADATA
          * arrives (see TransferReceiver.handleMetadata).
          */
+        const sessionId = this.getSessionId?.(peerDeviceId);
+
         this.transfers.set(request.transferId, {
             transferId: request.transferId,
             direction: "received",
@@ -510,7 +549,21 @@ export class TransferManager {
             bytesTransferred: 0,
             retryCount: 0,
             paused: false,
+            syncPairId: request.syncPairId,
+            relativePath: request.relativePath,
+            sessionId,
             state: "REQUESTED",
+        });
+
+        this.onEvent?.({
+            transferId: request.transferId,
+            type: "TRANSFER_REQUESTED",
+            sessionId,
+            chunksAcked: 0,
+            totalChunks: 0,
+            bytesTransferred: 0,
+            fileSize: 0,
+            timestamp: Date.now(),
         });
 
         /*
@@ -642,6 +695,17 @@ export class TransferManager {
             `[TRANSFER] Transfer ${message.transferId} completed`
         );
 
+        this.onEvent?.({
+            transferId: transfer.transferId,
+            type: "TRANSFER_COMPLETED",
+            sessionId: transfer.sessionId,
+            chunksAcked: transfer.chunksAcked,
+            totalChunks: transfer.totalChunks,
+            bytesTransferred: transfer.bytesTransferred,
+            fileSize: transfer.fileSize,
+            timestamp: Date.now(),
+        });
+
         /*
          * The transfer is no longer actively
          * sending, so remove the outgoing entry.
@@ -688,6 +752,7 @@ export class TransferManager {
         this.onEvent?.({
             transferId: ack.transferId,
             type: "CHUNK_ACKED",
+            sessionId: transfer.sessionId,
             chunkIndex: ack.chunkIndex,
             chunksAcked: transfer.chunksAcked,
             totalChunks: transfer.totalChunks,
@@ -719,6 +784,7 @@ export class TransferManager {
         this.onEvent?.({
             transferId: message.transferId,
             type: "TRANSFER_PAUSED",
+            sessionId: transfer.sessionId,
             chunksAcked: transfer.chunksAcked,
             totalChunks: transfer.totalChunks,
             bytesTransferred: transfer.bytesTransferred,
@@ -745,6 +811,7 @@ export class TransferManager {
         this.onEvent?.({
             transferId: message.transferId,
             type: "TRANSFER_RESUMED",
+            sessionId: transfer.sessionId,
             chunksAcked: transfer.chunksAcked,
             totalChunks: transfer.totalChunks,
             bytesTransferred: transfer.bytesTransferred,

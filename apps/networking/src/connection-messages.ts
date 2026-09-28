@@ -7,6 +7,7 @@ export interface ConnectRequest {
     messageId: string;
     sequence: number;
     deviceId: string;
+    sessionId: string;
     deviceName?: string;
     platform?: string;
     timestamp: number;

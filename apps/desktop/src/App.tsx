@@ -6,21 +6,29 @@ import {
 
 import {
     connectToDevice,
+    createSyncPair,
     disconnectDevice,
     getConnections,
     getDevice,
     getDevices,
+    getSessions,
+    getSyncPairs,
     getTransfers,
+    removeSyncPair,
     startTransfer,
     subscribeToProtocolEvents,
+    syncNow,
     type ConnectionInfo,
     type DeviceInfo,
     type DiscoveredDevice,
+    type SessionSummary,
+    type SyncPair,
     type Transfer,
     type ProtocolEvent,
 } from "./api";
 
 import { TransferVisualizer } from "./TransferVisualizer";
+import { SessionReplay } from "./ProtocolTimeline";
 
 import "./App.css";
 
@@ -58,6 +66,33 @@ function App() {
     const [selectedTransferId, setSelectedTransferId] =
         useState<string | null>(null);
 
+    const [syncPairs, setSyncPairs] =
+        useState<SyncPair[]>([]);
+
+    const [syncFolder, setSyncFolder] =
+        useState<string | null>(null);
+
+    const [syncName, setSyncName] =
+        useState("");
+
+    const [syncPeerId, setSyncPeerId] =
+        useState("");
+
+    const [creatingSyncPair, setCreatingSyncPair] =
+        useState(false);
+
+    const [syncingPairId, setSyncingPairId] =
+        useState<string | null>(null);
+
+    const [removingPairId, setRemovingPairId] =
+        useState<string | null>(null);
+
+    const [sessions, setSessions] =
+        useState<SessionSummary[]>([]);
+
+    const [openSessionId, setOpenSessionId] =
+        useState<string | null>(null);
+
     const loadData = useCallback(
         async () => {
             try {
@@ -66,17 +101,23 @@ function App() {
                     devicesData,
                     connectionsData,
                     transfersData,
+                    syncPairsData,
+                    sessionsData,
                 ] = await Promise.all([
                     getDevice(),
                     getDevices(),
                     getConnections(),
                     getTransfers(),
+                    getSyncPairs(),
+                    getSessions(),
                 ]);
 
                 setDevice(deviceData);
                 setDevices(devicesData);
                 setConnections(connectionsData);
                 setTransfers(transfersData);
+                setSyncPairs(syncPairsData);
+                setSessions(sessionsData);
 
                 setApiOnline(true);
                 setError(null);
@@ -221,7 +262,100 @@ function App() {
         }
     };
 
-    
+    const handlePickSyncFolder = async () => {
+        try {
+            if (!window.electronAPI?.selectFolder) {
+                setError(
+                    "Folder picker not available – preload script may not be loaded."
+                );
+                return;
+            }
+
+            const folder = await window.electronAPI.selectFolder();
+
+            if (folder) {
+                setSyncFolder(folder);
+            }
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to select folder"
+            );
+        }
+    };
+
+    const handleCreateSyncPair = async () => {
+        if (!syncFolder || !syncPeerId || !syncName.trim()) {
+            setError(
+                "Choose a folder, a peer, and a name to create a sync pair."
+            );
+            return;
+        }
+
+        try {
+            setCreatingSyncPair(true);
+            setError(null);
+
+            await createSyncPair(
+                syncPeerId,
+                syncFolder,
+                syncName.trim()
+            );
+
+            setSyncFolder(null);
+            setSyncName("");
+            setSyncPeerId("");
+
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to create sync pair"
+            );
+        } finally {
+            setCreatingSyncPair(false);
+        }
+    };
+
+    const handleSyncNow = async (pairId: string) => {
+        try {
+            setSyncingPairId(pairId);
+            setError(null);
+
+            await syncNow(pairId);
+
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to sync"
+            );
+        } finally {
+            setSyncingPairId(null);
+        }
+    };
+
+    const handleRemoveSyncPair = async (pairId: string) => {
+        try {
+            setRemovingPairId(pairId);
+            setError(null);
+
+            await removeSyncPair(pairId);
+
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to remove sync pair"
+            );
+        } finally {
+            setRemovingPairId(null);
+        }
+    };
 
     return (
         <div className="app">
@@ -596,6 +730,110 @@ function App() {
 
                 <section className="card">
                     <div className="card-header">
+                        <h2>Folder Sync</h2>
+
+                        <span className="count">
+                            {syncPairs.length}
+                        </span>
+                    </div>
+
+                    {syncPairs.length === 0 ? (
+                        <div className="empty-state compact">
+                            <strong>No synced folders</strong>
+
+                            <p>
+                                Pair a local folder with a connected device to keep them in sync.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="sync-pair-list">
+                            {syncPairs.map((pair) => (
+                                <div className="sync-pair-row" key={pair.pairId}>
+                                    <div className="sync-pair-info">
+                                        <strong>{pair.name}</strong>
+
+                                        <span className="mono" style={{ fontSize: "11px" }}>
+                                            {pair.localFolder}
+                                        </span>
+
+                                        <span>
+                                            Peer {pair.peerDeviceId.slice(0, 8)}
+                                            {pair.lastSyncAt &&
+                                                ` · Last synced ${new Date(pair.lastSyncAt).toLocaleTimeString()}`}
+                                        </span>
+                                    </div>
+
+                                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                        <span className="state">{pair.status}</span>
+
+                                        <button
+                                            className="connect-button"
+                                            disabled={syncingPairId === pair.pairId}
+                                            onClick={() => handleSyncNow(pair.pairId)}
+                                        >
+                                            {syncingPairId === pair.pairId ? "Syncing..." : "Sync Now"}
+                                        </button>
+
+                                        <button
+                                            className="disconnect-button"
+                                            disabled={removingPairId === pair.pairId}
+                                            onClick={() => handleRemoveSyncPair(pair.pairId)}
+                                        >
+                                            {removingPairId === pair.pairId ? "..." : "Unpair"}
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    <div className="sync-pair-form">
+                        <button className="connect-button" onClick={handlePickSyncFolder}>
+                            {syncFolder ? "Change Folder" : "Choose Folder"}
+                        </button>
+
+                        {syncFolder && (
+                            <span className="mono" style={{ fontSize: "11px" }}>
+                                {syncFolder}
+                            </span>
+                        )}
+
+                        <input
+                            className="sync-name-input"
+                            type="text"
+                            placeholder="Pair name (e.g. Documents)"
+                            value={syncName}
+                            onChange={(event) => setSyncName(event.target.value)}
+                        />
+
+                        <select
+                            className="sync-peer-select"
+                            value={syncPeerId}
+                            onChange={(event) => setSyncPeerId(event.target.value)}
+                        >
+                            <option value="">Select a connected device</option>
+
+                            {connections
+                                .filter((connection) => connection.state === "CONNECTED")
+                                .map((connection) => (
+                                    <option key={connection.deviceId} value={connection.deviceId}>
+                                        {connection.deviceName || connection.deviceId}
+                                    </option>
+                                ))}
+                        </select>
+
+                        <button
+                            className="connect-button"
+                            disabled={creatingSyncPair}
+                            onClick={handleCreateSyncPair}
+                        >
+                            {creatingSyncPair ? "Creating..." : "Create Sync Pair"}
+                        </button>
+                    </div>
+                </section>
+
+                <section className="card">
+                    <div className="card-header">
                         <h2>Connection Activity</h2>
 
                         <span className="count">
@@ -624,6 +862,61 @@ function App() {
                                     </span>
                                 </div>
                             ))}
+                        </div>
+                    )}
+                </section>
+
+                <section className="card">
+                    <div className="card-header">
+                        <h2>Protocol Timeline</h2>
+
+                        <span className="count">
+                            {sessions.length}
+                        </span>
+                    </div>
+
+                    {sessions.length === 0 ? (
+                        <div className="empty-state compact">
+                            <strong>No sessions yet</strong>
+
+                            <p>
+                                Connect to a device to start recording a replayable session.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="session-list">
+                            {sessions.map((session) => {
+                                const peerLabel =
+                                    connections.find((c) => c.deviceId === session.peerDeviceId)
+                                        ?.deviceName ??
+                                    devices.find((d) => d.deviceId === session.peerDeviceId)
+                                        ?.deviceName ??
+                                    session.peerDeviceId.slice(0, 8);
+
+                                return (
+                                    <div
+                                        className="session-row"
+                                        key={session.sessionId}
+                                        onClick={() => setOpenSessionId(session.sessionId)}
+                                    >
+                                        <div className="sync-pair-info">
+                                            <strong>{peerLabel}</strong>
+                                            <span>
+                                                {new Date(session.startedAt).toLocaleString()}
+                                                {session.endedAt
+                                                    ? ` – ${new Date(session.endedAt).toLocaleTimeString()}`
+                                                    : " – ongoing"}
+                                            </span>
+                                        </div>
+
+                                        <span
+                                            className={`session-status-badge session-status-${session.status}`}
+                                        >
+                                            {session.status}
+                                        </span>
+                                    </div>
+                                );
+                            })}
                         </div>
                     )}
                 </section>
@@ -675,6 +968,15 @@ function App() {
                                                 {
                                                     transfer.fileName
                                                 }
+
+                                                {transfer.syncPairId && (
+                                                    <span className="session-badge" style={{ marginLeft: "8px" }}>
+                                                        Synced:{" "}
+                                                        {syncPairs.find(
+                                                            (pair) => pair.pairId === transfer.syncPairId
+                                                        )?.name ?? "unknown pair"}
+                                                    </span>
+                                                )}
                                             </strong>
 
                                             <span>
@@ -742,6 +1044,31 @@ function App() {
                     <TransferVisualizer
                         transfer={selectedTransfer}
                         onClose={() => setSelectedTransferId(null)}
+                    />
+                );
+            })()}
+
+            {openSessionId && (() => {
+                const session = sessions.find(
+                    (candidate) => candidate.sessionId === openSessionId
+                );
+
+                if (!session) {
+                    return null;
+                }
+
+                const peerLabel =
+                    connections.find((c) => c.deviceId === session.peerDeviceId)
+                        ?.deviceName ??
+                    devices.find((d) => d.deviceId === session.peerDeviceId)
+                        ?.deviceName ??
+                    session.peerDeviceId.slice(0, 8);
+
+                return (
+                    <SessionReplay
+                        sessionId={openSessionId}
+                        peerLabel={peerLabel}
+                        onClose={() => setOpenSessionId(null)}
                     />
                 );
             })()}

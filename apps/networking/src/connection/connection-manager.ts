@@ -24,6 +24,10 @@ import type {
 } from "../protocol-event";
 import type { TransferEventListener } from "../transfer/transfer-event";
 
+import { SyncEngine } from "../sync/sync-engine";
+import type { SyncEventListener } from "../sync/sync-event";
+import type { SyncPair } from "../sync/sync-state";
+
 const PROTOCOL_VERSION = "1.0.0";
 const TCP_PORT = 41236;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 5000;
@@ -51,6 +55,7 @@ export class ConnectionManager {
     private nextSequence = 0;
 
     private transferManager: TransferManager;
+    private syncEngine: SyncEngine;
 
     constructor(
         private readonly deviceId: string,
@@ -58,10 +63,41 @@ export class ConnectionManager {
         private readonly tcpPort: number = TCP_PORT,
         private readonly connectionTimeoutMs: number = DEFAULT_CONNECTION_TIMEOUT_MS,
         private readonly onEvent?: ProtocolEventListener,
-        onTransferEvent?: TransferEventListener
+        onTransferEvent?: TransferEventListener,
+        onSyncEvent?: SyncEventListener
     ) {
-        this.transferManager =
-            new TransferManager(onTransferEvent);
+        /*
+         * SyncEngine needs TransferManager to push files, but
+         * TransferManager also needs a way to resolve a sync pair's
+         * folder and report write conflicts back to SyncEngine. Since
+         * `this.syncEngine` is assigned right after construction and
+         * these resolvers are only ever invoked later (once a real
+         * transfer arrives), the closures below can safely reference
+         * `this.syncEngine` despite it not existing yet at this line.
+         */
+        const getSessionId = (peerDeviceId: string): string | undefined =>
+            this.connections.get(peerDeviceId)?.sessionId;
+
+        this.transferManager = new TransferManager(
+            onTransferEvent,
+            (syncPairId) => this.syncEngine.getLocalFolder(syncPairId),
+            (info) => this.syncEngine.handleConflict(info),
+            getSessionId
+        );
+
+        this.syncEngine = new SyncEngine(
+            deviceId,
+            this.transferManager,
+            (peerDeviceId) => {
+                const connection = this.connections.get(peerDeviceId);
+
+                return connection?.state === ConnectionState.CONNECTED
+                    ? connection.socket
+                    : undefined;
+            },
+            onSyncEvent,
+            getSessionId
+        );
     }
 
     pauseTransfer(transferId: string): void {
@@ -74,6 +110,30 @@ export class ConnectionManager {
 
     cancelTransfer(transferId: string): void {
         this.transferManager.cancelTransfer(transferId);
+    }
+
+    createSyncPair(
+        peerDeviceId: string,
+        localFolder: string,
+        name: string
+    ): SyncPair {
+        return this.syncEngine.createPair(
+            peerDeviceId,
+            localFolder,
+            name
+        );
+    }
+
+    removeSyncPair(pairId: string): void {
+        this.syncEngine.removePair(pairId);
+    }
+
+    syncNow(pairId: string): void {
+        this.syncEngine.syncNow(pairId);
+    }
+
+    getSyncPairs(): SyncPair[] {
+        return this.syncEngine.getPairs();
     }
 
     async connectToDevice(
@@ -98,7 +158,8 @@ export class ConnectionManager {
         console.log(
             `[CONNECTION] Connecting to ${device.deviceName} at ${device.ip}:${this.tcpPort}`
         );
-        this.emit("CONNECT_ATTEMPT", device.deviceId, undefined, device.deviceName);
+        const sessionId = randomUUID();
+        this.emit("CONNECT_ATTEMPT", device.deviceId, sessionId, device.deviceName);
 
         const socket = new net.Socket();
         const framer = this.createFramer(device.deviceId);
@@ -110,6 +171,7 @@ export class ConnectionManager {
             deviceId: device.deviceId,
             deviceName: device.deviceName,
             platform: device.platform,
+            sessionId,
         };
 
         this.connections.set(device.deviceId, connection);
@@ -185,7 +247,8 @@ export class ConnectionManager {
                         );
 
                         this.sendConnectRequest(
-                            socket
+                            socket,
+                            sessionId
                         );
 
                         resolve();
@@ -342,7 +405,8 @@ export class ConnectionManager {
     }
 
     private sendConnectRequest(
-        socket: net.Socket
+        socket: net.Socket,
+        sessionId: string
     ): void {
         const request: ConnectRequest = {
             type:
@@ -357,6 +421,8 @@ export class ConnectionManager {
             sequence: this.nextSequence++,
 
             deviceId: this.deviceId,
+
+            sessionId,
 
             deviceName: this.deviceName,
 
@@ -373,7 +439,7 @@ export class ConnectionManager {
         console.log(
             "[CONNECTION] CONNECT_REQUEST sent"
         );
-        this.emit("CONNECT_REQUEST_SENT");
+        this.emit("CONNECT_REQUEST_SENT", undefined, sessionId);
     }
 
     private handleMessage(
@@ -417,6 +483,23 @@ export class ConnectionManager {
             )
         ) {
             this.transferManager.handleMessage(
+                socket,
+                message,
+                peerDeviceId
+            );
+
+            return;
+        }
+
+        /*
+         * Route sync messages to SyncEngine.
+         */
+        if (
+            messageType.startsWith(
+                "SYNC_"
+            )
+        ) {
+            this.syncEngine.handleMessage(
                 socket,
                 message,
                 peerDeviceId
@@ -478,7 +561,7 @@ export class ConnectionManager {
         console.log(
             `[CONNECTION] CONNECT_REQUEST received from ${request.deviceId} (version: ${request.version})`
         );
-        this.emit("CONNECT_REQUEST_RECEIVED", request.deviceId);
+        this.emit("CONNECT_REQUEST_RECEIVED", request.deviceId, request.sessionId);
 
         // 1. Check self connection
         if (request.deviceId === this.deviceId) {
@@ -514,8 +597,8 @@ export class ConnectionManager {
             return;
         }
 
-        // 4. Accept connection & establish session
-        const sessionId = randomUUID();
+        // 4. Accept connection & establish session (echo the initiator's sessionId)
+        const sessionId = request.sessionId;
         const response: ConnectAccept = {
             type: MessageType.CONNECT_ACCEPT,
             version: PROTOCOL_VERSION,
@@ -577,7 +660,7 @@ export class ConnectionManager {
         if (!this.isValidConnectAccept(response)) {
             connection.state = ConnectionState.FAILED;
             connection.rejectReason = "INVALID_CONNECT_ACCEPT";
-            this.emit("MALFORMED_MESSAGE", peerDeviceId, undefined, "Invalid CONNECT_ACCEPT");
+            this.emit("MALFORMED_MESSAGE", peerDeviceId, connection.sessionId, "Invalid CONNECT_ACCEPT");
             connection.socket.destroy();
             return;
         }
@@ -613,6 +696,8 @@ export class ConnectionManager {
                 peerDeviceId
             );
 
+        const sessionId = connection?.sessionId;
+
         if (connection) {
             connection.state =
                 ConnectionState.REJECTED;
@@ -621,7 +706,7 @@ export class ConnectionManager {
         }
 
         this.handleSocketTermination(peerDeviceId);
-        this.emit("CONNECT_REJECTED", peerDeviceId, undefined, response.reason);
+        this.emit("CONNECT_REJECTED", peerDeviceId, sessionId, response.reason);
     }
 
     private sendConnectReject(
@@ -765,6 +850,8 @@ export class ConnectionManager {
             message.sequence >= 0 &&
             typeof message.deviceId === "string" &&
             message.deviceId.length > 0 &&
+            typeof message.sessionId === "string" &&
+            message.sessionId.length > 0 &&
             typeof message.timestamp === "number"
         );
     }

@@ -41,9 +41,11 @@ export class TransferReceiver {
         new Map<string, Map<number, Buffer>>();
 
     /**
-     * Directory where received files are stored. Fixed under the
-     * user's home directory so it doesn't depend on which process
-     * cwd the networking engine happens to be started from.
+     * Directory where manually-sent files are stored. Fixed under
+     * the user's home directory so it doesn't depend on which
+     * process cwd the networking engine happens to be started from.
+     * Sync-tagged transfers are written into their sync pair's own
+     * folder instead (see `getSyncFolder`).
      */
     private readonly receivedDirectory =
         path.join(
@@ -52,9 +54,26 @@ export class TransferReceiver {
             "Received"
         );
 
+    /**
+     * Sender-reported modification time for the source file, keyed
+     * by transfer ID. Only set for sync-tagged transfers; used to
+     * detect a conflicting local edit at write time.
+     */
+    private sourceModifiedAt =
+        new Map<string, number>();
+
     constructor(
         private readonly transfers: Map<string, Transfer>,
-        private readonly onEvent?: TransferEventListener
+        private readonly onEvent?: TransferEventListener,
+        private readonly getSyncFolder?: (
+            syncPairId: string
+        ) => string | undefined,
+        private readonly onSyncConflict?: (info: {
+            transferId: string;
+            syncPairId: string;
+            relativePath: string;
+            conflictPath: string;
+        }) => void
     ) {}
 
     /**
@@ -105,6 +124,8 @@ export class TransferReceiver {
             bytesTransferred: 0,
             retryCount: 0,
             paused: false,
+            syncPairId: metadata.syncPairId,
+            relativePath: metadata.relativePath,
             state: "TRANSFERRING",
         };
 
@@ -123,6 +144,13 @@ export class TransferReceiver {
             metadata.transferId,
             new Map()
         );
+
+        if (typeof metadata.sourceModifiedAt === "number") {
+            this.sourceModifiedAt.set(
+                metadata.transferId,
+                metadata.sourceModifiedAt
+            );
+        }
 
         console.log(
             "[TRANSFER] Ready to receive file"
@@ -385,20 +413,37 @@ export class TransferReceiver {
             return;
         }
 
+        this.onEvent?.({
+            transferId: transfer.transferId,
+            type: "TRANSFER_VERIFIED",
+            sessionId: transfer.sessionId,
+            chunksAcked: transfer.chunksAcked,
+            totalChunks: transfer.totalChunks,
+            bytesTransferred: transfer.bytesTransferred,
+            fileSize: transfer.fileSize,
+            timestamp: Date.now(),
+        });
+
+        const outputPath = this.resolveOutputPath(transfer);
+
+        if (!outputPath) {
+            return;
+        }
+
         /*
-         * Make sure the received-files
-         * directory exists.
+         * Make sure the destination directory exists (sync
+         * transfers can carry a relative path with subdirectories).
          */
         try {
             fs.mkdirSync(
-                this.receivedDirectory,
+                path.dirname(outputPath),
                 {
                     recursive: true,
                 }
             );
         } catch (error) {
             console.error(
-                "[TRANSFER] Failed to create received directory:",
+                "[TRANSFER] Failed to create destination directory:",
                 error
             );
 
@@ -406,27 +451,22 @@ export class TransferReceiver {
         }
 
         /*
-         * Sanitize the filename so that a
-         * sender cannot escape the received
-         * directory using ../ paths.
+         * A sync-tagged transfer whose destination already holds a
+         * copy modified more recently than the sender's version is a
+         * conflict: don't clobber the newer local edit. Save the
+         * incoming file alongside it instead so nothing is lost.
          */
-        const safeFileName =
-            path.basename(
-                transfer.fileName
-            );
-
-        const outputPath =
-            path.join(
-                this.receivedDirectory,
-                safeFileName
-            );
+        const finalPath = this.applyConflictPolicy(
+            transfer,
+            outputPath
+        );
 
         /*
          * Write the reconstructed file.
          */
         try {
             fs.writeFileSync(
-                outputPath,
+                finalPath,
                 fileBuffer
             );
         } catch (error) {
@@ -439,7 +479,7 @@ export class TransferReceiver {
         }
 
         console.log(
-            `[TRANSFER] File saved: ${outputPath}`
+            `[TRANSFER] File saved: ${finalPath}`
         );
 
         /*
@@ -450,7 +490,18 @@ export class TransferReceiver {
             "COMPLETED";
 
         transfer.savedPath =
-            outputPath;
+            finalPath;
+
+        this.onEvent?.({
+            transferId: transfer.transferId,
+            type: "TRANSFER_COMPLETED",
+            sessionId: transfer.sessionId,
+            chunksAcked: transfer.chunksAcked,
+            totalChunks: transfer.totalChunks,
+            bytesTransferred: transfer.bytesTransferred,
+            fileSize: transfer.fileSize,
+            timestamp: Date.now(),
+        });
 
         /*
          * Tell the sender that the file
@@ -493,6 +544,143 @@ export class TransferReceiver {
         this.chunkBuffers.delete(
             transfer.transferId
         );
+
+        this.sourceModifiedAt.delete(
+            transfer.transferId
+        );
+    }
+
+    /**
+     * Decide where a completed transfer's file should be written.
+     * Sync-tagged transfers go into their pair's own folder (nested
+     * under the transfer's relative path); everything else goes into
+     * the flat manually-received folder.
+     */
+    private resolveOutputPath(
+        transfer: Transfer
+    ): string | undefined {
+        if (transfer.syncPairId && transfer.relativePath) {
+            const syncFolder = this.getSyncFolder?.(
+                transfer.syncPairId
+            );
+
+            if (syncFolder) {
+                const resolvedFolder =
+                    path.resolve(syncFolder);
+
+                const candidate =
+                    path.resolve(
+                        resolvedFolder,
+                        transfer.relativePath
+                    );
+
+                /*
+                 * Make sure the relative path can't escape the sync
+                 * folder (e.g. via "../../" segments).
+                 */
+                if (
+                    candidate !== resolvedFolder &&
+                    !candidate.startsWith(
+                        resolvedFolder + path.sep
+                    )
+                ) {
+                    console.error(
+                        `[TRANSFER] Rejecting unsafe sync path: ${transfer.relativePath}`
+                    );
+
+                    return undefined;
+                }
+
+                return candidate;
+            }
+
+            console.warn(
+                `[TRANSFER] Unknown sync pair ${transfer.syncPairId}, falling back to the manual received folder`
+            );
+        }
+
+        try {
+            fs.mkdirSync(
+                this.receivedDirectory,
+                { recursive: true }
+            );
+        } catch (error) {
+            console.error(
+                "[TRANSFER] Failed to create received directory:",
+                error
+            );
+
+            return undefined;
+        }
+
+        const safeFileName =
+            path.basename(
+                transfer.fileName
+            );
+
+        return path.join(
+            this.receivedDirectory,
+            safeFileName
+        );
+    }
+
+    /**
+     * If a sync-tagged transfer's destination already has a file
+     * that was modified more recently than the sender's copy, the
+     * two sides diverged independently between syncs. Rather than
+     * silently overwrite the newer local edit (or the incoming one),
+     * write the incoming file alongside it and report the conflict.
+     */
+    private applyConflictPolicy(
+        transfer: Transfer,
+        outputPath: string
+    ): string {
+        if (!transfer.syncPairId) {
+            return outputPath;
+        }
+
+        const sourceModifiedAt =
+            this.sourceModifiedAt.get(
+                transfer.transferId
+            );
+
+        if (typeof sourceModifiedAt !== "number") {
+            return outputPath;
+        }
+
+        let existingMtimeMs: number | undefined;
+
+        try {
+            existingMtimeMs =
+                fs.statSync(outputPath).mtimeMs;
+        } catch {
+            // No existing file at this path, so there's no conflict.
+            return outputPath;
+        }
+
+        if (existingMtimeMs <= sourceModifiedAt) {
+            return outputPath;
+        }
+
+        const parsed = path.parse(outputPath);
+
+        const conflictPath = path.join(
+            parsed.dir,
+            `${parsed.name} (sync conflict from ${transfer.peerDeviceId.slice(0, 8)})${parsed.ext}`
+        );
+
+        console.warn(
+            `[TRANSFER] Sync conflict at ${outputPath}, saving incoming file as ${conflictPath}`
+        );
+
+        this.onSyncConflict?.({
+            transferId: transfer.transferId,
+            syncPairId: transfer.syncPairId,
+            relativePath: transfer.relativePath ?? parsed.base,
+            conflictPath,
+        });
+
+        return conflictPath;
     }
 
     private sendMessage(
