@@ -48,3 +48,6 @@ SyncBridge_Roadmap.md
 packages/protocol/src/*.js
 packages/protocol/src/*.js.map
 packages/protocol/src/*.d.ts
+
+received/
+test-files/
