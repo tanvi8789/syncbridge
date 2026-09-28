@@ -1,7 +1,9 @@
 import {
     useCallback,
     useEffect,
+    useRef,
     useState,
+    type DragEvent as ReactDragEvent,
 } from "react";
 
 import {
@@ -16,8 +18,14 @@ import {
     getTransfers,
     removeSyncPair,
     startTransfer,
+    getClipboard,
+    setClipboardEnabled,
+    shareClipboard,
+    subscribeToClipboardEvents,
     subscribeToProtocolEvents,
     syncNow,
+    type ClipboardEvent as SyncClipboardEvent,
+    type ClipboardState,
     type ConnectionInfo,
     type DeviceInfo,
     type DiscoveredDevice,
@@ -93,6 +101,38 @@ function App() {
     const [openSessionId, setOpenSessionId] =
         useState<string | null>(null);
 
+    const [explainMode, setExplainMode] =
+        useState<boolean>(() => {
+            try {
+                return localStorage.getItem("syncbridge.explainMode") === "1";
+            } catch {
+                return false;
+            }
+        });
+
+    const [clipboard, setClipboard] =
+        useState<ClipboardState | null>(null);
+
+    const [clipboardBusy, setClipboardBusy] =
+        useState(false);
+
+    const [clipboardNotice, setClipboardNotice] =
+        useState<string | null>(null);
+
+    const [dragActive, setDragActive] =
+        useState(false);
+
+    const [pendingDropPaths, setPendingDropPaths] =
+        useState<string[] | null>(null);
+
+    /*
+     * dragenter/dragleave fire for every child element the cursor
+     * crosses, so a plain boolean flickers. Counting enters and
+     * leaves keeps the overlay stable until the cursor really
+     * leaves the window.
+     */
+    const dragDepth = useRef(0);
+
     const loadData = useCallback(
         async () => {
             try {
@@ -103,6 +143,7 @@ function App() {
                     transfersData,
                     syncPairsData,
                     sessionsData,
+                    clipboardData,
                 ] = await Promise.all([
                     getDevice(),
                     getDevices(),
@@ -110,6 +151,7 @@ function App() {
                     getTransfers(),
                     getSyncPairs(),
                     getSessions(),
+                    getClipboard(),
                 ]);
 
                 setDevice(deviceData);
@@ -118,6 +160,7 @@ function App() {
                 setTransfers(transfersData);
                 setSyncPairs(syncPairsData);
                 setSessions(sessionsData);
+                setClipboard(clipboardData);
 
                 setApiOnline(true);
                 setError(null);
@@ -160,6 +203,150 @@ function App() {
             () => setApiOnline(false)
         ),
     [loadData]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(
+                "syncbridge.explainMode",
+                explainMode ? "1" : "0"
+            );
+        } catch {
+            // Private mode or blocked storage — the toggle just
+            // won't be remembered between launches.
+        }
+    }, [explainMode]);
+
+    /*
+     * An incoming clipboard is written to this machine's OS
+     * clipboard as soon as it arrives, which is the whole point of
+     * the feature. The main process records what it wrote so its
+     * own watcher doesn't bounce it straight back.
+     */
+    useEffect(
+        () =>
+            subscribeToClipboardEvents(
+                (event: SyncClipboardEvent) => {
+                    if (event.type === "CLIPBOARD_RECEIVED") {
+                        void (async () => {
+                            const state = await getClipboard();
+                            setClipboard(state);
+
+                            const latest = state.latest;
+
+                            if (
+                                latest?.direction === "received" &&
+                                window.electronAPI?.writeClipboard
+                            ) {
+                                await window.electronAPI.writeClipboard(
+                                    latest.content
+                                );
+                            }
+
+                            setClipboardNotice(
+                                `Clipboard received from ${event.deviceId?.slice(0, 8) ?? "peer"}`
+                            );
+                        })();
+
+                        return;
+                    }
+
+                    if (event.type === "CLIPBOARD_SENT") {
+                        void getClipboard().then(setClipboard);
+                        setClipboardNotice("Clipboard shared with peers");
+                        return;
+                    }
+
+                    if (event.type === "CLIPBOARD_BLOCKED") {
+                        setClipboardNotice(
+                            event.detail ?? "Clipboard update blocked"
+                        );
+                    }
+                }
+            ),
+        []
+    );
+
+    useEffect(() => {
+        if (!clipboardNotice) {
+            return;
+        }
+
+        const timer = setTimeout(() => setClipboardNotice(null), 4000);
+
+        return () => clearTimeout(timer);
+    }, [clipboardNotice]);
+
+    const handleToggleClipboard = async () => {
+        if (!clipboard) {
+            return;
+        }
+
+        try {
+            setClipboardBusy(true);
+            setError(null);
+
+            const next = !clipboard.enabled;
+
+            await setClipboardEnabled(next);
+            setClipboard(await getClipboard());
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to change clipboard sharing"
+            );
+        } finally {
+            setClipboardBusy(false);
+        }
+    };
+
+    const handleShareClipboardNow = async () => {
+        try {
+            setClipboardBusy(true);
+            setError(null);
+
+            if (!window.electronAPI?.readClipboard) {
+                setError(
+                    "Clipboard access not available – preload script may not be loaded."
+                );
+                return;
+            }
+
+            const text = await window.electronAPI.readClipboard();
+
+            if (!text) {
+                setClipboardNotice("Clipboard is empty");
+                return;
+            }
+
+            const result = await shareClipboard(text);
+
+            setClipboardNotice(
+                result.shared
+                    ? `Shared with ${result.peers} peer(s)`
+                    : "Nothing new to share — peers already have this"
+            );
+
+            setClipboard(await getClipboard());
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to share clipboard"
+            );
+        } finally {
+            setClipboardBusy(false);
+        }
+    };
+
+    const handleCopyEntry = async (content: string) => {
+        if (!window.electronAPI?.writeClipboard) {
+            return;
+        }
+
+        await window.electronAPI.writeClipboard(content);
+        setClipboardNotice("Copied to this device's clipboard");
+    };
 
     const connectedDeviceIds =
         new Set(
@@ -262,6 +449,129 @@ function App() {
         }
     };
 
+    /**
+     * Send one or more already-resolved absolute paths to a peer.
+     * Shared by the drag-and-drop flow and the device chooser.
+     */
+    const sendPathsToDevice = async (
+        deviceId: string,
+        paths: string[]
+    ) => {
+        try {
+            setSendingDeviceId(deviceId);
+            setError(null);
+
+            for (const filePath of paths) {
+                await startTransfer(deviceId, filePath);
+            }
+
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to start file transfer"
+            );
+        } finally {
+            setSendingDeviceId(null);
+            setPendingDropPaths(null);
+        }
+    };
+
+    const handleDragEnter = (
+        event: ReactDragEvent<HTMLDivElement>
+    ) => {
+        if (!event.dataTransfer.types.includes("Files")) {
+            return;
+        }
+
+        event.preventDefault();
+        dragDepth.current += 1;
+        setDragActive(true);
+    };
+
+    const handleDragOver = (
+        event: ReactDragEvent<HTMLDivElement>
+    ) => {
+        if (!event.dataTransfer.types.includes("Files")) {
+            return;
+        }
+
+        // Without this the browser navigates to the dropped file.
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+    };
+
+    const handleDragLeave = (
+        event: ReactDragEvent<HTMLDivElement>
+    ) => {
+        event.preventDefault();
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+
+        if (dragDepth.current === 0) {
+            setDragActive(false);
+        }
+    };
+
+    const handleDrop = async (
+        event: ReactDragEvent<HTMLDivElement>
+    ) => {
+        event.preventDefault();
+        dragDepth.current = 0;
+        setDragActive(false);
+
+        const files = Array.from(event.dataTransfer.files);
+
+        if (files.length === 0) {
+            return;
+        }
+
+        if (!window.electronAPI?.getPathForFile) {
+            setError(
+                "Drag and drop needs the desktop app – open SyncBridge in Electron."
+            );
+            return;
+        }
+
+        /*
+         * Electron removed File.path in v32, so the real filesystem
+         * path has to come from webUtils by way of the preload.
+         */
+        const paths = files
+            .map((file) => {
+                try {
+                    return window.electronAPI.getPathForFile(file);
+                } catch {
+                    return "";
+                }
+            })
+            .filter((filePath) => filePath.length > 0);
+
+        if (paths.length === 0) {
+            setError(
+                "Could not resolve the dropped item. Folders are not supported yet — drop files instead."
+            );
+            return;
+        }
+
+        const targets = Array.from(connectedDeviceIds);
+
+        if (targets.length === 0) {
+            setError(
+                "Connect to a device before dropping files onto the window."
+            );
+            return;
+        }
+
+        if (targets.length === 1) {
+            await sendPathsToDevice(targets[0], paths);
+            return;
+        }
+
+        // More than one peer is connected, so let the user pick.
+        setPendingDropPaths(paths);
+    };
+
     const handlePickSyncFolder = async () => {
         try {
             if (!window.electronAPI?.selectFolder) {
@@ -358,7 +668,28 @@ function App() {
     };
 
     return (
-        <div className="app">
+        <div
+            className={`app ${dragActive ? "app-drag-active" : ""}`}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+        >
+            {dragActive && (
+                <div className="drop-overlay">
+                    <div className="drop-overlay-inner">
+                        <strong>Drop to send</strong>
+                        <p>
+                            {connectedDeviceIds.size === 0
+                                ? "No connected devices — connect to a peer first"
+                                : connectedDeviceIds.size === 1
+                                  ? "Sends to your connected peer"
+                                  : "You'll choose which peer to send to"}
+                        </p>
+                    </div>
+                </div>
+            )}
+
             <header className="header">
                 <div>
                     <h1>SyncBridge</h1>
@@ -369,24 +700,41 @@ function App() {
                     </p>
                 </div>
 
-                <div
-                    className={`api-status ${
-                        apiOnline
-                            ? "online"
-                            : "offline"
-                    }`}
-                >
-                    <span className="status-dot" />
+                <div className="header-actions">
+                    <button
+                        className={`explain-toggle ${explainMode ? "on" : ""}`}
+                        onClick={() => setExplainMode((value) => !value)}
+                        title="Show plain-English explanations of each protocol step"
+                    >
+                        <span className="explain-toggle-dot" />
+                        Explain mode
+                    </button>
 
-                    {apiOnline
-                        ? "API Online"
-                        : "API Offline"}
+                    <div
+                        className={`api-status ${
+                            apiOnline
+                                ? "online"
+                                : "offline"
+                        }`}
+                    >
+                        <span className="status-dot" />
+
+                        {apiOnline
+                            ? "API Online"
+                            : "API Offline"}
+                    </div>
                 </div>
             </header>
 
             {error && (
                 <div className="error-banner">
                     {error}
+                </div>
+            )}
+
+            {clipboardNotice && (
+                <div className="notice-banner">
+                    {clipboardNotice}
                 </div>
             )}
 
@@ -444,34 +792,6 @@ function App() {
                             information...
                         </p>
                     )}
-                </section>
-
-                <section className="card">
-                    <div className="card-header">
-                        <h2>File Transfer Test</h2>
-                    </div>
-
-                    <button
-                        className="connect-button"
-                        onClick={async () => {
-                            try {
-                                // Guard against missing preload API
-                                if (!window.electronAPI?.selectFile) {
-                                    setError('File picker not available – preload may not be loaded.');
-                                    return;
-                                }
-                                const filePath = await window.electronAPI.selectFile();
-
-                                if (filePath) {
-                                    setError(`Selected: ${filePath}`);
-                                }
-                            } catch (err) {
-                                setError(err instanceof Error ? err.message : 'Failed to select file');
-                            }
-                        }}
-                    >
-                        Select File
-                    </button>
                 </section>
 
                 <section className="card">
@@ -923,6 +1243,91 @@ function App() {
 
                 <section className="card">
                     <div className="card-header">
+                        <h2>Shared Clipboard</h2>
+
+                        <button
+                            className={`clipboard-switch ${
+                                clipboard?.enabled ? "on" : "off"
+                            }`}
+                            disabled={!clipboard || clipboardBusy}
+                            onClick={handleToggleClipboard}
+                        >
+                            {clipboard?.enabled ? "On" : "Off"}
+                        </button>
+                    </div>
+
+                    <p className="card-hint">
+                        Text you copy is shared with every connected peer, and
+                        anything a peer copies lands on your clipboard.
+                    </p>
+
+                    <div className="clipboard-actions">
+                        <button
+                            className="connect-button"
+                            disabled={clipboardBusy || !clipboard?.enabled}
+                            onClick={handleShareClipboardNow}
+                        >
+                            Share clipboard now
+                        </button>
+                    </div>
+
+                    {!clipboard || clipboard.history.length === 0 ? (
+                        <div className="empty-state compact">
+                            <strong>Nothing shared yet</strong>
+                            <p>
+                                Copy some text on either device to see it
+                                appear here.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="clipboard-list">
+                            {clipboard.history.slice(0, 5).map((entry) => (
+                                <div
+                                    className="clipboard-row"
+                                    key={entry.clipboardId}
+                                >
+                                    <div className="file-icon">
+                                        {entry.direction === "received"
+                                            ? "↓"
+                                            : "↑"}
+                                    </div>
+
+                                    <div className="clipboard-info">
+                                        <span className="clipboard-preview">
+                                            {entry.content.length > 140
+                                                ? `${entry.content.slice(0, 140)}…`
+                                                : entry.content}
+                                        </span>
+
+                                        <span className="clipboard-meta">
+                                            {entry.direction === "received"
+                                                ? `From ${entry.origin.slice(0, 8)}`
+                                                : "Shared by you"}
+                                            {" · "}
+                                            {formatBytes(entry.length)}
+                                            {" · "}
+                                            {new Date(
+                                                entry.timestamp
+                                            ).toLocaleTimeString()}
+                                        </span>
+                                    </div>
+
+                                    <button
+                                        className="connect-button"
+                                        onClick={() =>
+                                            handleCopyEntry(entry.content)
+                                        }
+                                    >
+                                        Copy
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </section>
+
+                <section className="card">
+                    <div className="card-header">
                         <h2>Transfers</h2>
 
                         <span className="count">
@@ -1043,6 +1448,7 @@ function App() {
                 return (
                     <TransferVisualizer
                         transfer={selectedTransfer}
+                        explainMode={explainMode}
                         onClose={() => setSelectedTransferId(null)}
                     />
                 );
@@ -1068,10 +1474,85 @@ function App() {
                     <SessionReplay
                         sessionId={openSessionId}
                         peerLabel={peerLabel}
+                        explainMode={explainMode}
                         onClose={() => setOpenSessionId(null)}
                     />
                 );
             })()}
+
+            {pendingDropPaths && (
+                <div
+                    className="visualizer-overlay"
+                    onClick={() => setPendingDropPaths(null)}
+                >
+                    <div
+                        className="visualizer-panel drop-chooser"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="visualizer-header">
+                            <div>
+                                <strong>
+                                    Send {pendingDropPaths.length} file
+                                    {pendingDropPaths.length === 1 ? "" : "s"}
+                                </strong>
+                                <span className="visualizer-subtitle">
+                                    Choose a connected device
+                                </span>
+                            </div>
+
+                            <button
+                                className="visualizer-close"
+                                onClick={() => setPendingDropPaths(null)}
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        <div className="device-list">
+                            {Array.from(connectedDeviceIds).map((deviceId) => {
+                                const label =
+                                    connections.find(
+                                        (connection) =>
+                                            connection.deviceId === deviceId
+                                    )?.deviceName ??
+                                    devices.find(
+                                        (candidate) =>
+                                            candidate.deviceId === deviceId
+                                    )?.deviceName ??
+                                    deviceId.slice(0, 8);
+
+                                return (
+                                    <div className="device-row" key={deviceId}>
+                                        <div className="transfer-info">
+                                            <strong>{label}</strong>
+                                            <span className="mono">
+                                                {deviceId.slice(0, 8)}
+                                            </span>
+                                        </div>
+
+                                        <button
+                                            className="connect-button"
+                                            disabled={
+                                                sendingDeviceId !== null
+                                            }
+                                            onClick={() =>
+                                                sendPathsToDevice(
+                                                    deviceId,
+                                                    pendingDropPaths
+                                                )
+                                            }
+                                        >
+                                            {sendingDeviceId === deviceId
+                                                ? "Sending…"
+                                                : "Send"}
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

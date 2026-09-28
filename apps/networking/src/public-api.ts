@@ -29,8 +29,21 @@ export type {
 } from "./sync/sync-state";
 
 export type {
+    ClipboardEvent,
+    ClipboardEventType,
+} from "./clipboard/clipboard-event";
+
+export type {
+    ClipboardEntry,
+} from "./clipboard/clipboard-manager";
+
+export type {
     SessionSummary,
     SessionStatus,
     TimelineEntry,
     TimelineStage,
+    SessionExport,
+    SessionExportStats,
 } from "./session/session-store";
+
+export { SESSION_EXPORT_FORMAT_VERSION } from "./session/session-store";

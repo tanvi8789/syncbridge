@@ -7,6 +7,27 @@ import { DeviceIdentity } from "./device-identity";
 import { DeviceRegistry } from "./device-registry";
 import type { ProtocolEventListener } from "../protocol-event";
 
+/*
+ * Discovery runs at two cadences. While this device has no peer
+ * connections it is actively looking for one, so it broadcasts
+ * often. Once a connection is established the broadcast is only
+ * keeping the registry warm and letting new devices notice us, so it
+ * backs off sharply — this is what stops the protocol log filling
+ * with DISCOVER/DISCOVER_RESPONSE traffic during a transfer.
+ */
+const SEARCHING_BROADCAST_INTERVAL_MS = 10_000;
+const CONNECTED_BROADCAST_INTERVAL_MS = 60_000;
+
+/*
+ * A device is dropped after it misses this many broadcast rounds.
+ * Deriving it from the current interval rather than hard-coding 30 s
+ * means backing off the broadcast can't cause peers to be evicted
+ * before they ever get a chance to answer.
+ */
+const STALE_ROUNDS = 3;
+
+const CLEANUP_INTERVAL_MS = 10_000;
+
 export class DiscoveryService {
     private socket: DiscoverySocket;
     private identity: DeviceIdentity;
@@ -14,6 +35,10 @@ export class DiscoveryService {
 
     private discoveryInterval?: NodeJS.Timeout;
     private cleanupInterval?: NodeJS.Timeout;
+
+    private broadcastIntervalMs = SEARCHING_BROADCAST_INTERVAL_MS;
+    private hasConnections = false;
+    private running = false;
 
     constructor(
         identity: DeviceIdentity,
@@ -31,20 +56,75 @@ export class DiscoveryService {
     start(): void {
         this.socket.start();
 
+        this.running = true;
+
         // Initial discovery after socket starts
         setTimeout(() => {
             this.broadcastDiscovery();
         }, 500);
 
-        // Broadcast discovery every 10 seconds
+        this.scheduleBroadcasts();
+
+        // Drop devices that have missed several broadcast rounds
+        this.cleanupInterval = setInterval(() => {
+            this.registry.removeStale(
+                this.getStaleTimeoutMs()
+            );
+        }, CLEANUP_INTERVAL_MS);
+    }
+
+    /**
+     * Switch between the searching and connected broadcast cadences.
+     *
+     * Called by NetworkingEngine whenever a connection opens or
+     * closes, so an idle-but-connected device stops flooding the LAN
+     * (and the protocol event log) with discovery traffic.
+     */
+    setConnectionsActive(hasConnections: boolean): void {
+        if (hasConnections === this.hasConnections) {
+            return;
+        }
+
+        this.hasConnections = hasConnections;
+
+        const nextInterval = hasConnections
+            ? CONNECTED_BROADCAST_INTERVAL_MS
+            : SEARCHING_BROADCAST_INTERVAL_MS;
+
+        if (nextInterval === this.broadcastIntervalMs) {
+            return;
+        }
+
+        this.broadcastIntervalMs = nextInterval;
+
+        console.log(
+            `[DISCOVERY] ${
+                hasConnections ? "Connected" : "Searching"
+            } — broadcasting every ${nextInterval / 1000}s ` +
+                `(devices go stale after ${this.getStaleTimeoutMs() / 1000}s)`
+        );
+
+        if (this.running) {
+            this.scheduleBroadcasts();
+        }
+    }
+
+    getBroadcastIntervalMs(): number {
+        return this.broadcastIntervalMs;
+    }
+
+    private getStaleTimeoutMs(): number {
+        return this.broadcastIntervalMs * STALE_ROUNDS;
+    }
+
+    private scheduleBroadcasts(): void {
+        if (this.discoveryInterval) {
+            clearInterval(this.discoveryInterval);
+        }
+
         this.discoveryInterval = setInterval(() => {
             this.broadcastDiscovery();
-        }, 10_000);
-
-        // Remove devices that haven't been seen for 30 seconds
-        this.cleanupInterval = setInterval(() => {
-            this.registry.removeStale(30_000);
-        }, 10_000);
+        }, this.broadcastIntervalMs);
     }
 
     private broadcastDiscovery(): void {
@@ -350,6 +430,8 @@ export class DiscoveryService {
     }
 
     stop(): void {
+        this.running = false;
+
         // Stop discovery broadcast timer
         if (this.discoveryInterval) {
             clearInterval(

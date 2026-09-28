@@ -12,6 +12,13 @@ declare global {
             selectFolder(): Promise<
                 string | null
             >;
+            getPathForFile(
+                file: File
+            ): string;
+            readClipboard(): Promise<string>;
+            writeClipboard(
+                text: string
+            ): Promise<boolean>;
         };
     }
 }

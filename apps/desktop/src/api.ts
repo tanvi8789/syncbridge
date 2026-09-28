@@ -430,3 +430,132 @@ export function getSessionTimeline(
         `/api/sessions/${sessionId}/timeline`
     );
 }
+
+// -------------------------
+// Shared clipboard
+// -------------------------
+
+export type ClipboardEventType =
+    | "CLIPBOARD_SENT"
+    | "CLIPBOARD_RECEIVED"
+    | "CLIPBOARD_BLOCKED";
+
+export interface ClipboardEvent {
+    id: string;
+    type: ClipboardEventType;
+    deviceId?: string;
+    preview: string;
+    length: number;
+    timestamp: number;
+    sessionId?: string;
+    detail?: string;
+}
+
+export interface ClipboardEntry {
+    clipboardId: string;
+    origin: string;
+    direction: "sent" | "received";
+    content: string;
+    contentHash: string;
+    length: number;
+    timestamp: number;
+}
+
+export interface ClipboardState {
+    enabled: boolean;
+    latest: ClipboardEntry | null;
+    history: ClipboardEntry[];
+}
+
+export function getClipboard(): Promise<ClipboardState> {
+    return fetchApi<ClipboardState>("/api/clipboard");
+}
+
+export function shareClipboard(
+    content: string
+): Promise<{
+    shared: boolean;
+    peers: number;
+    latest: ClipboardEntry | null;
+}> {
+    return fetchApi("/api/clipboard", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content }),
+    });
+}
+
+export function setClipboardEnabled(
+    enabled: boolean
+): Promise<{ enabled: boolean }> {
+    return fetchApi("/api/clipboard/enabled", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ enabled }),
+    });
+}
+
+export function subscribeToClipboardEvents(
+    onEvent: (event: ClipboardEvent) => void,
+    onError?: () => void
+): () => void {
+    const events = new EventSource(
+        `${API_BASE_URL}/api/events`
+    );
+
+    events.addEventListener(
+        "clipboard-event",
+        (message) => {
+            try {
+                onEvent(
+                    JSON.parse(
+                        (message as MessageEvent<string>).data
+                    ) as ClipboardEvent
+                );
+            } catch {
+                // Ignore a malformed event and keep the stream connected.
+            }
+        }
+    );
+
+    events.onerror = () => onError?.();
+
+    return () => events.close();
+}
+
+// -------------------------
+// Session export
+// -------------------------
+
+export interface SessionExportStats {
+    totalEvents: number;
+    protocolEvents: number;
+    transferEvents: number;
+    syncEvents: number;
+    firstEventAt?: number;
+    lastEventAt?: number;
+    spanMs?: number;
+    eventsByStage: Record<string, number>;
+    eventsByType: Record<string, number>;
+}
+
+export interface SessionExport {
+    formatVersion: string;
+    exportedAt: number;
+    session: SessionSummary;
+    device: DeviceInfo;
+    stats: SessionExportStats;
+    timeline: TimelineEntry[];
+}
+
+export function getSessionExport(
+    sessionId: string
+): Promise<SessionExport> {
+    return fetchApi<SessionExport>(
+        `/api/sessions/${sessionId}/export`
+    );
+}

@@ -3,7 +3,12 @@ import http from "node:http";
 import {
     NetworkingEngine,
 } from "networking";
-import type { ProtocolEvent, TransferEvent, SyncEvent } from "networking";
+import type {
+    ProtocolEvent,
+    TransferEvent,
+    SyncEvent,
+    ClipboardEvent,
+} from "networking";
 
 const API_HOST = "127.0.0.1";
 const API_PORT = 41235;
@@ -151,13 +156,21 @@ async function start(): Promise<void> {
                             );
                         };
 
+                        const sendClipboardEvent = (event: ClipboardEvent) => {
+                            response.write(
+                                `event: clipboard-event\ndata: ${JSON.stringify(event)}\n\n`
+                            );
+                        };
+
                         networking.on("protocol-event", sendEvent);
                         networking.on("transfer-event", sendTransferEvent);
                         networking.on("sync-event", sendSyncEvent);
+                        networking.on("clipboard-event", sendClipboardEvent);
                         request.on("close", () => {
                             networking.off("protocol-event", sendEvent);
                             networking.off("transfer-event", sendTransferEvent);
                             networking.off("sync-event", sendSyncEvent);
+                            networking.off("clipboard-event", sendClipboardEvent);
                         });
 
                         return;
@@ -635,6 +648,133 @@ async function start(): Promise<void> {
                     }
 
                     // -------------------------
+                    // Shared clipboard
+                    // -------------------------
+
+                    if (
+                        request.method === "GET" &&
+                        request.url === "/api/clipboard"
+                    ) {
+                        response.writeHead(200);
+
+                        response.end(
+                            JSON.stringify({
+                                enabled: networking.isClipboardEnabled(),
+                                latest: networking.getClipboard() ?? null,
+                                history: networking.getClipboardHistory(),
+                            })
+                        );
+
+                        return;
+                    }
+
+                    if (
+                        request.method === "POST" &&
+                        request.url === "/api/clipboard"
+                    ) {
+                        try {
+                            const body = await readBody(request);
+
+                            const parsed = JSON.parse(body) as {
+                                content?: unknown;
+                            };
+
+                            if (typeof parsed.content !== "string") {
+                                response.writeHead(400);
+
+                                response.end(
+                                    JSON.stringify({
+                                        error: "content must be a string",
+                                    })
+                                );
+
+                                return;
+                            }
+
+                            const peers = networking.publishClipboard(
+                                parsed.content
+                            );
+
+                            response.writeHead(200);
+
+                            response.end(
+                                JSON.stringify({
+                                    /*
+                                     * -1 means the update was dropped as an
+                                     * echo, oversized, or while sharing is
+                                     * off. That is an expected outcome of a
+                                     * clipboard watcher, not a failure.
+                                     */
+                                    shared: peers >= 0,
+                                    peers: Math.max(peers, 0),
+                                    latest: networking.getClipboard() ?? null,
+                                })
+                            );
+                        } catch (error) {
+                            response.writeHead(400);
+
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Failed to share clipboard",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    if (
+                        request.method === "POST" &&
+                        request.url === "/api/clipboard/enabled"
+                    ) {
+                        try {
+                            const body = await readBody(request);
+
+                            const parsed = JSON.parse(body) as {
+                                enabled?: unknown;
+                            };
+
+                            if (typeof parsed.enabled !== "boolean") {
+                                response.writeHead(400);
+
+                                response.end(
+                                    JSON.stringify({
+                                        error: "enabled must be a boolean",
+                                    })
+                                );
+
+                                return;
+                            }
+
+                            networking.setClipboardEnabled(parsed.enabled);
+
+                            response.writeHead(200);
+
+                            response.end(
+                                JSON.stringify({
+                                    enabled: networking.isClipboardEnabled(),
+                                })
+                            );
+                        } catch (error) {
+                            response.writeHead(400);
+
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Failed to update clipboard setting",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    // -------------------------
                     // Protocol timeline / sessions
                     // -------------------------
 
@@ -668,6 +808,47 @@ async function start(): Promise<void> {
                         response.end(
                             JSON.stringify(
                                 networking.getSessionTimeline(sessionId)
+                            )
+                        );
+
+                        return;
+                    }
+
+                    const sessionExportMatch =
+                        request.method === "GET" && request.url
+                            ? request.url.match(
+                                  /^\/api\/sessions\/([^/]+)\/export$/
+                              )
+                            : null;
+
+                    if (sessionExportMatch) {
+                        const [, sessionId] = sessionExportMatch;
+
+                        const exported =
+                            networking.getSessionExport(sessionId);
+
+                        if (!exported) {
+                            response.writeHead(404);
+
+                            response.end(
+                                JSON.stringify({
+                                    error: `Unknown session: ${sessionId}`,
+                                })
+                            );
+
+                            return;
+                        }
+
+                        response.writeHead(200);
+
+                        response.end(
+                            JSON.stringify(
+                                {
+                                    ...exported,
+                                    device: networking.getDeviceInfo(),
+                                },
+                                null,
+                                2
                             )
                         );
 

@@ -14,6 +14,8 @@ import {
     type TransferEvent,
 } from "./api";
 
+import { TRANSFER_STEP_EXPLANATIONS } from "./explain";
+
 /*
  * Per-chunk state, kept in a plain typed array (not React state) so
  * thousands of chunk-level events per second don't trigger React
@@ -102,6 +104,7 @@ function initialNarration(transfer: Transfer): string {
 
 interface Props {
     transfer: Transfer;
+    explainMode: boolean;
     onClose: () => void;
 }
 
@@ -118,7 +121,11 @@ interface Sample {
     bytesTransferred: number;
 }
 
-export function TransferVisualizer({ transfer, onClose }: Props) {
+export function TransferVisualizer({
+    transfer,
+    explainMode,
+    onClose,
+}: Props) {
     const [live, setLive] = useState<LiveState>({
         state: transfer.state,
         paused: transfer.paused,
@@ -355,6 +362,7 @@ export function TransferVisualizer({ transfer, onClose }: Props) {
                         {STEPS.map((step, index) => (
                             <div
                                 key={step.key}
+                                title={TRANSFER_STEP_EXPLANATIONS[step.key]}
                                 className={`visualizer-step ${
                                     index < stepIndex ? "done" : index === stepIndex ? "active" : ""
                                 }`}
@@ -386,6 +394,38 @@ export function TransferVisualizer({ transfer, onClose }: Props) {
                 </div>
 
                 <p className="visualizer-narration">{narration}</p>
+
+                {explainMode && stepIndex >= 0 && (
+                    <div className="explain-panel">
+                        <div className="explain-stage">
+                            <span className="explain-badge">
+                                {STEPS[stepIndex]?.label}
+                            </span>
+                            <p>
+                                {
+                                    TRANSFER_STEP_EXPLANATIONS[
+                                        STEPS[stepIndex]?.key ?? ""
+                                    ]
+                                }
+                            </p>
+                        </div>
+
+                        {live.retryCount > 0 && (
+                            <div className="explain-event">
+                                <span className="explain-badge subtle">
+                                    {live.retryCount} retr
+                                    {live.retryCount === 1 ? "y" : "ies"}
+                                </span>
+                                <p>
+                                    A chunk went unacknowledged for 5 seconds
+                                    and was re-sent. TCP already guarantees
+                                    delivery, so this points at a peer that
+                                    stopped responding rather than lost packets.
+                                </p>
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 <div className="chunk-grid-wrapper">
                     <canvas ref={canvasRef} className="chunk-grid-canvas" />

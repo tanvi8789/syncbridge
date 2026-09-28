@@ -28,6 +28,13 @@ import { SyncEngine } from "../sync/sync-engine";
 import type { SyncEventListener } from "../sync/sync-event";
 import type { SyncPair } from "../sync/sync-state";
 
+import {
+    ClipboardManager,
+    type ClipboardEntry,
+    type PeerSocket,
+} from "../clipboard/clipboard-manager";
+import type { ClipboardEventListener } from "../clipboard/clipboard-event";
+
 const PROTOCOL_VERSION = "1.0.0";
 const TCP_PORT = 41236;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 5000;
@@ -56,6 +63,7 @@ export class ConnectionManager {
 
     private transferManager: TransferManager;
     private syncEngine: SyncEngine;
+    private clipboardManager: ClipboardManager;
 
     constructor(
         private readonly deviceId: string,
@@ -64,7 +72,8 @@ export class ConnectionManager {
         private readonly connectionTimeoutMs: number = DEFAULT_CONNECTION_TIMEOUT_MS,
         private readonly onEvent?: ProtocolEventListener,
         onTransferEvent?: TransferEventListener,
-        onSyncEvent?: SyncEventListener
+        onSyncEvent?: SyncEventListener,
+        onClipboardEvent?: ClipboardEventListener
     ) {
         /*
          * SyncEngine needs TransferManager to push files, but
@@ -98,6 +107,56 @@ export class ConnectionManager {
             onSyncEvent,
             getSessionId
         );
+
+        this.clipboardManager = new ClipboardManager(
+            deviceId,
+            () => this.getConnectedPeerSockets(),
+            onClipboardEvent,
+            getSessionId
+        );
+    }
+
+    /**
+     * Every peer currently in the CONNECTED state, for subsystems
+     * that broadcast rather than target a single device.
+     */
+    private getConnectedPeerSockets(): PeerSocket[] {
+        const peers: PeerSocket[] = [];
+
+        for (const [peerDeviceId, connection] of this.connections) {
+            if (connection.state === ConnectionState.CONNECTED) {
+                peers.push({
+                    deviceId: peerDeviceId,
+                    socket: connection.socket,
+                });
+            }
+        }
+
+        return peers;
+    }
+
+    publishClipboard(content: string): number {
+        return this.clipboardManager.publish(content);
+    }
+
+    getClipboard(): ClipboardEntry | undefined {
+        return this.clipboardManager.getLatest();
+    }
+
+    getClipboardHistory(): ClipboardEntry[] {
+        return this.clipboardManager.getHistory();
+    }
+
+    isClipboardEnabled(): boolean {
+        return this.clipboardManager.isEnabled();
+    }
+
+    setClipboardEnabled(enabled: boolean): void {
+        this.clipboardManager.setEnabled(enabled);
+    }
+
+    acknowledgeClipboardWrite(contentHash: string): void {
+        this.clipboardManager.acknowledgeLocalWrite(contentHash);
     }
 
     pauseTransfer(transferId: string): void {
@@ -483,6 +542,23 @@ export class ConnectionManager {
             )
         ) {
             this.transferManager.handleMessage(
+                socket,
+                message,
+                peerDeviceId
+            );
+
+            return;
+        }
+
+        /*
+         * Route clipboard messages to ClipboardManager.
+         */
+        if (
+            messageType.startsWith(
+                "CLIPBOARD_"
+            )
+        ) {
+            this.clipboardManager.handleMessage(
                 socket,
                 message,
                 peerDeviceId

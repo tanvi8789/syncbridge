@@ -37,6 +37,31 @@ export interface TimelineEntry {
     event: ProtocolEvent | TransferEvent | SyncEvent;
 }
 
+export const SESSION_EXPORT_FORMAT_VERSION = "1.0.0";
+
+export interface SessionExportStats {
+    totalEvents: number;
+    protocolEvents: number;
+    transferEvents: number;
+    syncEvents: number;
+
+    firstEventAt?: number;
+    lastEventAt?: number;
+    spanMs?: number;
+
+    eventsByStage: Record<string, number>;
+    eventsByType: Record<string, number>;
+}
+
+export interface SessionExport {
+    formatVersion: string;
+    exportedAt: number;
+
+    session: SessionSummary;
+    stats: SessionExportStats;
+    timeline: TimelineEntry[];
+}
+
 interface SessionRecord {
     summary: SessionSummary;
     protocolEvents: ProtocolEvent[];
@@ -157,6 +182,64 @@ export class SessionStore {
         return [...discoveryEntries, ...entries].sort(
             (a, b) => a.timestamp - b.timestamp
         );
+    }
+
+    /**
+     * A self-contained record of one session: the summary, the full
+     * correlated timeline, and derived statistics.
+     *
+     * This is what the desktop app downloads as a shareable artefact,
+     * so it deliberately carries everything a reader needs without
+     * having to query the running engine again.
+     */
+    getSessionExport(
+        sessionId: string
+    ): SessionExport | undefined {
+        const record = this.sessions.get(sessionId);
+
+        if (!record) {
+            return undefined;
+        }
+
+        const timeline = this.getSessionTimeline(sessionId);
+
+        const eventsByStage: Record<string, number> = {};
+        const eventsByType: Record<string, number> = {};
+
+        for (const entry of timeline) {
+            eventsByStage[entry.stage] =
+                (eventsByStage[entry.stage] ?? 0) + 1;
+
+            const type = (entry.event as { type?: string }).type;
+
+            if (type) {
+                eventsByType[type] = (eventsByType[type] ?? 0) + 1;
+            }
+        }
+
+        const first = timeline[0]?.timestamp;
+        const last = timeline[timeline.length - 1]?.timestamp;
+
+        return {
+            formatVersion: SESSION_EXPORT_FORMAT_VERSION,
+            exportedAt: Date.now(),
+            session: record.summary,
+            stats: {
+                totalEvents: timeline.length,
+                protocolEvents: record.protocolEvents.length,
+                transferEvents: record.transferEvents.length,
+                syncEvents: record.syncEvents.length,
+                firstEventAt: first,
+                lastEventAt: last,
+                spanMs:
+                    first !== undefined && last !== undefined
+                        ? last - first
+                        : undefined,
+                eventsByStage,
+                eventsByType,
+            },
+            timeline,
+        };
     }
 
     private handleProtocolEvent(event: ProtocolEvent): void {

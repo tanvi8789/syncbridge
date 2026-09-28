@@ -819,3 +819,235 @@
     font-weight: 700;
     color: #3b5998;
 }
+
+/* -------------------------------------------------
+   Explain mode
+   ------------------------------------------------- */
+
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.explain-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 13px;
+    border-radius: 20px;
+    border: 1px solid #d5d8dc;
+    background: #ffffff;
+    color: #6c727a;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.explain-toggle:hover {
+    border-color: #b9bdc3;
+}
+
+.explain-toggle.on {
+    background: #eef2fb;
+    border-color: #c3d0ec;
+    color: #3b5998;
+}
+
+.explain-toggle-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #c8ccd1;
+}
+
+.explain-toggle.on .explain-toggle-dot {
+    background: #3b5998;
+}
+
+.explain-panel {
+    margin: 0 0 18px;
+    padding: 14px 16px;
+    border-radius: 9px;
+    background: #f7f9fd;
+    border: 1px solid #dfe6f4;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.explain-stage p,
+.explain-event p {
+    margin: 6px 0 0;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #3d444d;
+}
+
+.explain-badge {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 5px;
+    background: #3b5998;
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+}
+
+.explain-badge.subtle {
+    background: #e3e8f2;
+    color: #3b5998;
+}
+
+/* -------------------------------------------------
+   Session export buttons
+   ------------------------------------------------- */
+
+.visualizer-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* -------------------------------------------------
+   Shared clipboard
+   ------------------------------------------------- */
+
+.card-hint {
+    margin: 0 0 14px;
+    font-size: 13px;
+    color: #6c727a;
+    line-height: 1.5;
+}
+
+.clipboard-switch {
+    min-width: 52px;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+}
+
+.clipboard-switch.on {
+    background: #eaf7ef;
+    border-color: #c6e6d3;
+    color: #247a45;
+}
+
+.clipboard-switch.off {
+    background: #f1f2f4;
+    border-color: #e1e3e6;
+    color: #7a8088;
+}
+
+.clipboard-switch:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.clipboard-actions {
+    margin-bottom: 14px;
+}
+
+.clipboard-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.clipboard-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 13px;
+    border: 1px solid #e8eaed;
+    border-radius: 9px;
+    background: #fbfbfc;
+}
+
+.clipboard-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.clipboard-preview {
+    font-size: 13px;
+    color: #17191c;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.clipboard-meta {
+    font-size: 11px;
+    color: #7a8088;
+}
+
+.notice-banner {
+    margin: 20px auto 0;
+    width: min(1100px, calc(100% - 48px));
+    padding: 12px 16px;
+    border-radius: 9px;
+    background: #eef2fb;
+    color: #3b5998;
+    border: 1px solid #d3ddf0;
+    font-size: 13px;
+}
+
+/* -------------------------------------------------
+   Drag and drop
+   ------------------------------------------------- */
+
+.app-drag-active {
+    cursor: copy;
+}
+
+.drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(23, 25, 28, 0.55);
+    backdrop-filter: blur(2px);
+    pointer-events: none;
+}
+
+.drop-overlay-inner {
+    padding: 40px 56px;
+    border-radius: 16px;
+    border: 2px dashed #ffffff;
+    background: rgba(255, 255, 255, 0.12);
+    text-align: center;
+    color: #ffffff;
+}
+
+.drop-overlay-inner strong {
+    display: block;
+    font-size: 22px;
+    letter-spacing: -0.3px;
+}
+
+.drop-overlay-inner p {
+    margin: 8px 0 0;
+    font-size: 14px;
+    opacity: 0.85;
+}
+
+.drop-chooser {
+    max-width: 520px;
+}

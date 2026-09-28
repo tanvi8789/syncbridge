@@ -39,7 +39,12 @@ transfer utility.
 | Sync conflict detection (keeps both copies) | ✅ Working |
 | Live protocol event stream to the UI (SSE) | ✅ Working |
 | Per-session protocol timeline + replay | ✅ Working |
+| Session export (JSON / Markdown / Mermaid) | ✅ Working |
+| Explain mode — plain-English protocol annotations | ✅ Working |
 | Real-time chunk-grid transfer visualizer | ✅ Working |
+| Shared clipboard across connected peers | ✅ Working |
+| Drag-and-drop files onto the window to send | ✅ Working |
+| Adaptive discovery cadence (backs off once connected) | ✅ Working |
 | Device pairing / trust / authentication | ❌ Not built (auto-accept today) |
 | Encryption of data in transit | ❌ Not built |
 | Persistent transfer history (database) | ❌ Not built |
@@ -156,6 +161,11 @@ capped at **16 MiB**; anything larger, or any invalid JSON, is reported as a
 - `FILE_TRANSFER_PAUSE` / `FILE_TRANSFER_RESUME`
 - `FILE_TRANSFER_CANCEL` / `FILE_TRANSFER_ERROR`
 
+**Clipboard (TCP, framed — prefix `CLIPBOARD_`)**
+- `CLIPBOARD_UPDATE` — text payload plus a SHA-256 `contentHash` that both
+  sides de-duplicate on, so an incoming clipboard written to the local OS
+  clipboard is never echoed back around the mesh
+
 **Folder sync (TCP, framed — prefix `SYNC_`)**
 - `SYNC_PAIR_REQUEST` / `SYNC_PAIR_ACCEPT` / `SYNC_PAIR_REJECT`
 - `SYNC_MANIFEST` — one-shot inventory exchange after pairing
@@ -163,9 +173,10 @@ capped at **16 MiB**; anything larger, or any invalid JSON, is reported as a
 - `SYNC_UNPAIR`
 
 Routing is by **message-type prefix**: `ConnectionManager.handleMessage()` sends
-anything starting with `FILE_` to `TransferManager`, anything starting with
-`SYNC_` to `SyncEngine`, and handles `CONNECT_*` itself. This keeps the three
-subsystems decoupled while sharing one socket.
+anything starting with `FILE_` to `TransferManager`, `SYNC_` to `SyncEngine`,
+`CLIPBOARD_` to `ClipboardManager`, and handles `CONNECT_*` itself. This keeps
+the subsystems decoupled while sharing one socket — adding clipboard sync
+needed no change to the connection layer beyond one more prefix branch.
 
 ### Chunking parameters
 
@@ -176,8 +187,11 @@ subsystems decoupled while sharing one socket.
 | Watchdog interval | 1000 ms | How often the sender checks for a stall |
 | `PROGRESS_EVENT_INTERVAL_MS` | 250 ms | Throttles UI progress events (not one per chunk) |
 | Sync scan tick | 5000 ms | How often an active sync pair re-scans its folder |
-| Discovery broadcast | 10 s | How often `DISCOVER` goes out |
-| Stale device timeout | 30 s | Devices unseen this long are dropped from the registry |
+| Discovery broadcast (searching) | 10 s | While no peer is connected, find one quickly |
+| Discovery broadcast (connected) | 60 s | Once connected, stop flooding the LAN and the event log |
+| Stale device timeout | 3 × broadcast interval | Derived, so backing off can't evict peers prematurely |
+| Clipboard poll | 1000 ms | Electron main samples the OS clipboard (no change event exists) |
+| Max clipboard payload | 256 KiB | Keeps a runaway paste from stalling the connection |
 
 ---
 
@@ -229,10 +243,11 @@ The engine is an `EventEmitter` publishing three independent streams:
 | `protocol-event` | Discovery, ConnectionManager, framing | `DISCOVER_SENT`, `DEVICE_DISCOVERED`, `CONNECT_ACCEPTED`, `MALFORMED_MESSAGE` |
 | `transfer-event` | TransferSender / TransferReceiver | `CHUNK_SENT`, `CHUNK_ACKED`, `CHUNK_RETRY`, `TRANSFER_PROGRESS`, `TRANSFER_VERIFIED`, `TRANSFER_COMPLETED` |
 | `sync-event` | SyncEngine | `PAIR_CREATED`, `SCAN_COMPLETE`, `FILE_QUEUED`, `FILE_DELETED`, `CONFLICT` |
+| `clipboard-event` | ClipboardManager | `CLIPBOARD_SENT`, `CLIPBOARD_RECEIVED`, `CLIPBOARD_BLOCKED` |
 
-The API fans all three out to the browser over a **single SSE endpoint**
+The API fans all four out to the browser over a **single SSE endpoint**
 (`GET /api/events`), tagged by event name. In parallel, `SessionStore` consumes
-the same three streams in-process and threads every event onto its
+the protocol/transfer/sync streams in-process and threads every event onto its
 `sessionId`, building a replayable timeline. This matters because SSE has no
 history — a UI opened after a transfer finished would otherwise see nothing.
 
@@ -256,6 +271,10 @@ history — a UI opened after a transfer finished would otherwise see nothing.
 | DELETE | `/api/sync-pairs/:id` | Unpair |
 | GET | `/api/sessions` | Recent session summaries |
 | GET | `/api/sessions/:id/timeline` | Full correlated timeline for replay |
+| GET | `/api/sessions/:id/export` | Self-contained session record: summary, stats, timeline |
+| GET | `/api/clipboard` | Sharing state, latest entry, recent history |
+| POST | `/api/clipboard` | Share text with connected peers (de-duplicated by hash) |
+| POST | `/api/clipboard/enabled` | Turn clipboard sharing on or off |
 
 Security posture of the API: bound to loopback only, CORS restricted to the Vite
 dev origins, request bodies capped at 1 MiB.
@@ -370,11 +389,13 @@ syncbridge/
 │  │     ├─ connection/            framing · tcp-server · connection-manager · connection-state
 │  │     ├─ transfer/              transfer-manager · -sender · -receiver · -messages · -state · -config · -event
 │  │     ├─ sync/                  sync-engine · sync-scanner · sync-state · sync-messages · sync-event
-│  │     └─ session/               session-store  (event correlation)
+│  │     ├─ clipboard/             clipboard-manager · clipboard-messages · clipboard-event
+│  │     └─ session/               session-store  (event correlation + export)
 │  ├─ api/src/index.ts         ← REST + SSE control plane (802 lines, single file)
 │  └─ desktop/
 │     ├─ electron/             main.ts (window, IPC) · preload.cts (contextBridge)
-│     └─ src/                  App.tsx · TransferVisualizer.tsx · ProtocolTimeline.tsx · api.ts
+│     └─ src/                  App.tsx · TransferVisualizer.tsx · ProtocolTimeline.tsx
+│                                api.ts · explain.ts · session-export.ts
 ├─ packages/protocol/          ← Phase-0 scaffold, currently unused
 ├─ docs/
 │  ├─ architecture/ARCHITECTURE.md
@@ -710,14 +731,18 @@ research-flavoured direction available.
 ```
 PORTS      41234/UDP discovery · 41235/HTTP api (loopback) · 41236/TCP data · 5173 vite
 FRAME      [4-byte uint32 BE length][UTF-8 JSON]   max 16 MiB
+ROUTING    CONNECT_* → ConnectionManager · FILE_* → Transfer · SYNC_* → Sync
+           CLIPBOARD_* → Clipboard   (prefix-dispatched over one socket)
 CHUNK      64 KiB, Base64 in JSON · ack each · 5 s stall → retry · 250 ms progress events
 INTEGRITY  SHA-256 over the whole file, checked before anything is written to disk
-TIMERS     discover 10 s · stale 30 s · sync scan 5 s · connect timeout 5 s · watchdog 1 s
+TIMERS     discover 10 s searching / 60 s connected · stale 3x interval
+           sync scan 5 s · connect timeout 5 s · watchdog 1 s · clipboard poll 1 s
 STATE      identity  ~/.syncbridge/identity.json
            received  ~/SyncBridge/
            baselines ~/SyncBridge/sync-state/<pairId>.json
-EVENTS     protocol-event · transfer-event · sync-event  →  SSE /api/events
-           →  SessionStore (50 sessions × 5000 events) → /api/sessions/:id/timeline
+EVENTS     protocol · transfer · sync · clipboard  →  SSE /api/events
+           →  SessionStore (50 sessions x 5000 events)
+           →  /api/sessions/:id/timeline  and  /export (JSON/Markdown/Mermaid)
 RUN        npm run dev          (networking watch + api + vite)
            npm run desktop:electron
            npm run check        (typecheck all workspaces)

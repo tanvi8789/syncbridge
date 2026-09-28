@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+    getSessionExport,
     getSessionTimeline,
     type ProtocolEvent,
     type SyncEvent,
@@ -8,6 +9,18 @@ import {
     type TimelineStage,
     type TransferEvent,
 } from "./api";
+
+import {
+    STAGE_EXPLANATIONS,
+    explainTimelineEntry,
+} from "./explain";
+
+import {
+    downloadText,
+    toJson,
+    toMarkdown,
+    toMermaid,
+} from "./session-export";
 
 const STEP_INTERVAL_MS = 900;
 
@@ -23,19 +36,67 @@ const BASE_STAGES: Array<{ key: TimelineStage; label: string }> = [
 
 const SYNC_STAGE = { key: "sync" as const, label: "Sync" };
 
+type ExportFormat = "json" | "markdown" | "mermaid";
+
 interface Props {
     sessionId: string;
     peerLabel: string;
+    explainMode: boolean;
     onClose: () => void;
 }
 
-export function SessionReplay({ sessionId, peerLabel, onClose }: Props) {
+export function SessionReplay({
+    sessionId,
+    peerLabel,
+    explainMode,
+    onClose,
+}: Props) {
     const [timeline, setTimeline] = useState<TimelineEntry[] | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [stepIndex, setStepIndex] = useState(0);
     const [playing, setPlaying] = useState(false);
 
+    const [exporting, setExporting] = useState<ExportFormat | null>(null);
+    const [exportError, setExportError] = useState<string | null>(null);
+
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    const handleExport = async (format: ExportFormat) => {
+        setExporting(format);
+        setExportError(null);
+
+        try {
+            const data = await getSessionExport(sessionId);
+
+            const stem = `syncbridge-session-${sessionId.slice(0, 8)}`;
+
+            if (format === "json") {
+                downloadText(
+                    `${stem}.json`,
+                    toJson(data),
+                    "application/json"
+                );
+            } else if (format === "markdown") {
+                downloadText(
+                    `${stem}.md`,
+                    toMarkdown(data, peerLabel),
+                    "text/markdown"
+                );
+            } else {
+                downloadText(
+                    `${stem}.mmd`,
+                    toMermaid(data, peerLabel),
+                    "text/plain"
+                );
+            }
+        } catch (err) {
+            setExportError(
+                err instanceof Error ? err.message : "Export failed"
+            );
+        } finally {
+            setExporting(null);
+        }
+    };
 
     useEffect(() => {
         let cancelled = false;
@@ -102,12 +163,44 @@ export function SessionReplay({ sessionId, peerLabel, onClose }: Props) {
                         <span className="visualizer-subtitle">{sessionId}</span>
                     </div>
 
-                    <button className="visualizer-close" onClick={onClose}>
-                        ✕
-                    </button>
+                    <div className="visualizer-header-actions">
+                        <button
+                            className="connect-button"
+                            disabled={exporting !== null || !timeline?.length}
+                            onClick={() => handleExport("json")}
+                            title="Full machine-readable export of this session"
+                        >
+                            {exporting === "json" ? "…" : "JSON"}
+                        </button>
+
+                        <button
+                            className="connect-button"
+                            disabled={exporting !== null || !timeline?.length}
+                            onClick={() => handleExport("markdown")}
+                            title="Readable write-up with event counts and timeline"
+                        >
+                            {exporting === "markdown" ? "…" : "Markdown"}
+                        </button>
+
+                        <button
+                            className="connect-button"
+                            disabled={exporting !== null || !timeline?.length}
+                            onClick={() => handleExport("mermaid")}
+                            title="Mermaid sequence diagram of the messages exchanged"
+                        >
+                            {exporting === "mermaid" ? "…" : "Diagram"}
+                        </button>
+
+                        <button className="visualizer-close" onClick={onClose}>
+                            ✕
+                        </button>
+                    </div>
                 </div>
 
                 {loadError && <div className="error-banner visualizer-error">{loadError}</div>}
+                {exportError && (
+                    <div className="error-banner visualizer-error">{exportError}</div>
+                )}
 
                 {!timeline && !loadError && (
                     <div className="empty-state compact">
@@ -136,11 +229,7 @@ export function SessionReplay({ sessionId, peerLabel, onClose }: Props) {
                                         className={`visualizer-step ${
                                             isEmpty ? "visualizer-step-empty" : isDone ? "done" : isActive ? "active" : ""
                                         }`}
-                                        title={
-                                            isEmpty
-                                                ? "Not yet implemented — planned for Phase 11 (pairing & trust)"
-                                                : undefined
-                                        }
+                                        title={STAGE_EXPLANATIONS[stage.key]}
                                     >
                                         <span className="visualizer-step-dot" />
                                         <span className="visualizer-step-label">{stage.label}</span>
@@ -152,6 +241,29 @@ export function SessionReplay({ sessionId, peerLabel, onClose }: Props) {
                         <p className="visualizer-narration">
                             {current ? describeEntry(current) : ""}
                         </p>
+
+                        {explainMode && current && (
+                            <div className="explain-panel">
+                                <div className="explain-stage">
+                                    <span className="explain-badge">
+                                        {current.stage}
+                                    </span>
+                                    <p>{STAGE_EXPLANATIONS[current.stage]}</p>
+                                </div>
+
+                                {explainTimelineEntry(current) && (
+                                    <div className="explain-event">
+                                        <span className="explain-badge subtle">
+                                            {
+                                                (current.event as { type?: string })
+                                                    .type
+                                            }
+                                        </span>
+                                        <p>{explainTimelineEntry(current)}</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
                         <div className="timeline-scrubber">
                             <button
