@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useMemo,
     useRef,
     useState,
     type DragEvent as ReactDragEvent,
@@ -23,6 +24,8 @@ import {
     shareClipboard,
     subscribeToClipboardEvents,
     subscribeToProtocolEvents,
+    subscribeToSyncEvents,
+    subscribeToTransferEvents,
     syncNow,
     type ClipboardEvent as SyncClipboardEvent,
     type ClipboardState,
@@ -30,15 +33,25 @@ import {
     type DeviceInfo,
     type DiscoveredDevice,
     type SessionSummary,
+    type SyncEvent,
     type SyncPair,
     type Transfer,
+    type TransferEvent,
     type ProtocolEvent,
 } from "./api";
+
+import {
+    buildSyncActivity,
+    SYNC_STATUS_LABEL,
+} from "./sync-activity";
 
 import { TransferVisualizer } from "./TransferVisualizer";
 import { SessionReplay } from "./ProtocolTimeline";
 
 import "./App.css";
+
+const MAX_SYNC_EVENTS = 200;
+const COLLAPSED_SECTIONS_KEY = "syncbridge.collapsedSections";
 
 function App() {
     const [device, setDevice] =
@@ -125,6 +138,45 @@ function App() {
     const [pendingDropPaths, setPendingDropPaths] =
         useState<string[] | null>(null);
 
+    const [syncEvents, setSyncEvents] =
+        useState<SyncEvent[]>([]);
+
+    const [collapsedSections, setCollapsedSections] =
+        useState<Record<string, boolean>>(() => {
+            try {
+                return JSON.parse(
+                    localStorage.getItem(COLLAPSED_SECTIONS_KEY) ?? "{}"
+                ) as Record<string, boolean>;
+            } catch {
+                return {};
+            }
+        });
+
+    const toggleSection = useCallback((key: string) => {
+        setCollapsedSections((current) => {
+            const next = { ...current, [key]: !current[key] };
+
+            try {
+                localStorage.setItem(
+                    COLLAPSED_SECTIONS_KEY,
+                    JSON.stringify(next)
+                );
+            } catch {
+                // Blocked storage — the section just won't
+                // remember its state between launches.
+            }
+
+            return next;
+        });
+    }, []);
+
+    const syncActivityByPair = useMemo(
+        () => buildSyncActivity(syncEvents, transfers),
+        [syncEvents, transfers]
+    );
+
+    const transfersCollapsed = collapsedSections.transfers === true;
+
     /*
      * dragenter/dragleave fire for every child element the cursor
      * crosses, so a plain boolean flickers. Counting enters and
@@ -203,6 +255,66 @@ function App() {
             () => setApiOnline(false)
         ),
     [loadData]);
+
+    /*
+     * Folder sync is otherwise invisible: the pair row only ever
+     * showed a status, so a sync looked like it went straight from
+     * idle to done. These events are what name the individual files.
+     */
+    useEffect(
+        () =>
+            subscribeToSyncEvents((event: SyncEvent) => {
+                if (event.relativePath) {
+                    setSyncEvents((current) =>
+                        [event, ...current].slice(0, MAX_SYNC_EVENTS)
+                    );
+                }
+
+                /*
+                 * A queued file means a transfer is about to appear,
+                 * and a delete means one may have gone away, so pull
+                 * the authoritative list. SCAN_COMPLETE fires every
+                 * 5 s per pair and carries no file, so it's ignored.
+                 */
+                if (event.type !== "SCAN_COMPLETE") {
+                    void getTransfers().then(setTransfers).catch(() => {});
+                }
+            }),
+        []
+    );
+
+    /*
+     * Progress is applied in place rather than refetching: these
+     * arrive every 250 ms per active transfer, and a round trip per
+     * event would swamp the API during a multi-file sync.
+     */
+    useEffect(
+        () =>
+            subscribeToTransferEvents((event: TransferEvent) => {
+                if (
+                    event.type === "TRANSFER_REQUESTED" ||
+                    event.type === "TRANSFER_VERIFIED" ||
+                    event.type === "TRANSFER_COMPLETED"
+                ) {
+                    void getTransfers().then(setTransfers).catch(() => {});
+                    return;
+                }
+
+                setTransfers((current) =>
+                    current.map((transfer) =>
+                        transfer.transferId === event.transferId
+                            ? {
+                                  ...transfer,
+                                  chunksAcked: event.chunksAcked,
+                                  bytesTransferred: event.bytesTransferred,
+                                  lastProgressAt: event.timestamp,
+                              }
+                            : transfer
+                    )
+                );
+            }),
+        []
+    );
 
     useEffect(() => {
         try {
@@ -1067,8 +1179,23 @@ function App() {
                         </div>
                     ) : (
                         <div className="sync-pair-list">
-                            {syncPairs.map((pair) => (
-                                <div className="sync-pair-row" key={pair.pairId}>
+                            {syncPairs.map((pair) => {
+                                const files =
+                                    syncActivityByPair.get(pair.pairId) ?? [];
+
+                                const activeCount = files.filter(
+                                    (file) =>
+                                        file.status === "transferring" ||
+                                        file.status === "queued"
+                                ).length;
+
+                                const filesKey = `sync:${pair.pairId}`;
+                                const filesCollapsed =
+                                    collapsedSections[filesKey] === true;
+
+                                return (
+                                <div className="sync-pair-card" key={pair.pairId}>
+                                <div className="sync-pair-row">
                                     <div className="sync-pair-info">
                                         <strong>{pair.name}</strong>
 
@@ -1103,7 +1230,125 @@ function App() {
                                         </button>
                                     </div>
                                 </div>
-                            ))}
+
+                                <div className="sync-files">
+                                    <button
+                                        type="button"
+                                        className="section-toggle sync-files-toggle"
+                                        aria-expanded={!filesCollapsed}
+                                        onClick={() => toggleSection(filesKey)}
+                                    >
+                                        <span
+                                            className={`chevron${
+                                                filesCollapsed ? " collapsed" : ""
+                                            }`}
+                                            aria-hidden="true"
+                                        >
+                                            ▾
+                                        </span>
+
+                                        <span>
+                                            {files.length === 0
+                                                ? "No file activity yet"
+                                                : `${files.length} file${
+                                                      files.length === 1 ? "" : "s"
+                                                  }`}
+                                            {activeCount > 0 &&
+                                                ` · ${activeCount} in progress`}
+                                        </span>
+                                    </button>
+
+                                    {!filesCollapsed && files.length === 0 && (
+                                        <p className="sync-files-empty">
+                                            Files appear here as they are scanned,
+                                            sent, and received. The folder is
+                                            rescanned every 5 seconds.
+                                        </p>
+                                    )}
+
+                                    {!filesCollapsed && files.length > 0 && (
+                                        <ul className="sync-file-list">
+                                            {files.map((file) => {
+                                                const percent =
+                                                    file.fileSize &&
+                                                    file.fileSize > 0 &&
+                                                    file.bytesTransferred !== undefined
+                                                        ? Math.min(
+                                                              100,
+                                                              Math.round(
+                                                                  (file.bytesTransferred /
+                                                                      file.fileSize) *
+                                                                      100
+                                                              )
+                                                          )
+                                                        : undefined;
+
+                                                return (
+                                                    <li
+                                                        className="sync-file-row"
+                                                        key={file.relativePath}
+                                                    >
+                                                        <span className="sync-file-arrow">
+                                                            {file.direction === "received"
+                                                                ? "↓"
+                                                                : file.direction === "sent"
+                                                                  ? "↑"
+                                                                  : "•"}
+                                                        </span>
+
+                                                        <div className="sync-file-main">
+                                                            <span
+                                                                className="sync-file-path mono"
+                                                                title={file.relativePath}
+                                                            >
+                                                                {file.relativePath}
+                                                            </span>
+
+                                                            <span className="sync-file-meta">
+                                                                {file.fileSize !== undefined &&
+                                                                    formatBytes(file.fileSize)}
+
+                                                                {file.status === "transferring" &&
+                                                                    percent !== undefined &&
+                                                                    ` · ${percent}% · ${
+                                                                        file.chunksAcked ?? 0
+                                                                    }/${
+                                                                        file.totalChunks ?? 0
+                                                                    } chunks`}
+
+                                                                {file.timestamp > 0 &&
+                                                                    ` · ${new Date(
+                                                                        file.timestamp
+                                                                    ).toLocaleTimeString()}`}
+                                                            </span>
+
+                                                            {file.status === "transferring" &&
+                                                                percent !== undefined && (
+                                                                    <div className="sync-file-bar">
+                                                                        <div
+                                                                            className="sync-file-bar-fill"
+                                                                            style={{
+                                                                                width: `${percent}%`,
+                                                                            }}
+                                                                        />
+                                                                    </div>
+                                                                )}
+                                                        </div>
+
+                                                        <span
+                                                            className={`sync-file-status status-${file.status}`}
+                                                        >
+                                                            {SYNC_STATUS_LABEL[file.status]}
+                                                        </span>
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    )}
+                                </div>
+                                </div>
+                                );
+                            })}
                         </div>
                     )}
 
@@ -1328,14 +1573,30 @@ function App() {
 
                 <section className="card">
                     <div className="card-header">
-                        <h2>Transfers</h2>
+                        <button
+                            type="button"
+                            className="section-toggle"
+                            aria-expanded={!transfersCollapsed}
+                            onClick={() => toggleSection("transfers")}
+                        >
+                            <span
+                                className={`chevron${
+                                    transfersCollapsed ? " collapsed" : ""
+                                }`}
+                                aria-hidden="true"
+                            >
+                                ▾
+                            </span>
+
+                            <h2>Transfers</h2>
+                        </button>
 
                         <span className="count">
                             {transfers.length}
                         </span>
                     </div>
 
-                    {transfers.length ===
+                    {transfersCollapsed ? null : transfers.length ===
                     0 ? (
                         <div className="empty-state compact">
                             <strong>
