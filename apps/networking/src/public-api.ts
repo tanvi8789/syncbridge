@@ -47,3 +47,14 @@ export type {
 } from "./session/session-store";
 
 export { SESSION_EXPORT_FORMAT_VERSION } from "./session/session-store";
+
+export type {
+    HistoryTransfer,
+    HistoryQuery,
+    HistoryPage,
+    Analytics,
+    AnalyticsPeer,
+    AnalyticsBucket,
+} from "./history/history-store";
+
+export { HISTORY_SCHEMA_VERSION } from "./history/history-store";

@@ -47,8 +47,8 @@ transfer utility.
 | Adaptive discovery cadence (backs off once connected) | ✅ Working |
 | Device pairing / trust / authentication | ❌ Not built (auto-accept today) |
 | Encryption of data in transit | ❌ Not built |
-| Persistent transfer history (database) | ❌ Not built |
-| Analytics dashboard | ❌ Not built |
+| Persistent transfer history (SQLite) | ✅ Working |
+| Analytics dashboard (throughput / RTT / retries) | ✅ Working |
 | Packaged installers | ❌ Not built |
 
 ---
@@ -78,6 +78,7 @@ protocol work is built directly on Node's standard library:
 | `node:dgram` | UDP socket, broadcast, discovery |
 | `node:net` | TCP server + TCP client sockets |
 | `node:crypto` | `randomUUID()` for IDs, `createHash("sha256")` for checksums |
+| `node:sqlite` | Durable transfer history and analytics (`DatabaseSync`) |
 | `node:fs` | File read/write, folder scanning, baseline persistence |
 | `node:os` | Hostname, network interface enumeration, netmask → broadcast address |
 | `node:path` | Path resolution and path-traversal safety checks |
@@ -275,6 +276,9 @@ history — a UI opened after a transfer finished would otherwise see nothing.
 | GET | `/api/clipboard` | Sharing state, latest entry, recent history |
 | POST | `/api/clipboard` | Share text with connected peers (de-duplicated by hash) |
 | POST | `/api/clipboard/enabled` | Turn clipboard sharing on or off |
+| GET | `/api/history/transfers` | Saved transfers; `limit`/`offset`/`since`/`direction`/`peerDeviceId`/`search` |
+| GET | `/api/analytics` | Aggregates over saved history; optional `since` |
+| DELETE | `/api/history` | Erase all saved history |
 
 Security posture of the API: bound to loopback only, CORS restricted to the Vite
 dev origins, request bodies capped at 1 MiB.
@@ -390,12 +394,15 @@ syncbridge/
 │  │     ├─ transfer/              transfer-manager · -sender · -receiver · -messages · -state · -config · -event
 │  │     ├─ sync/                  sync-engine · sync-scanner · sync-state · sync-messages · sync-event
 │  │     ├─ clipboard/             clipboard-manager · clipboard-messages · clipboard-event
-│  │     └─ session/               session-store  (event correlation + export)
+│  │     ├─ history/               history-store   (SQLite: transfers, sessions, devices)
+│  │     └─ session/               session-store   (event correlation + export)
 │  ├─ api/src/index.ts         ← REST + SSE control plane (802 lines, single file)
 │  └─ desktop/
 │     ├─ electron/             main.ts (window, IPC) · preload.cts (contextBridge)
 │     └─ src/                  App.tsx · TransferVisualizer.tsx · ProtocolTimeline.tsx
+│                                AnalyticsDashboard.tsx · TransferHistory.tsx · charts.tsx
 │                                api.ts · explain.ts · session-export.ts
+│                                sync-activity.ts · format.ts
 ├─ packages/protocol/          ← Phase-0 scaffold, currently unused
 ├─ docs/
 │  ├─ architecture/ARCHITECTURE.md
@@ -546,13 +553,16 @@ counter continue. Then show the checksum verification line in the log.
 - `apps/networking/src/sync/` — `sync-engine.ts`, `sync-scanner.ts`,
   `sync-state.ts`, `sync-messages.ts`, `sync-event.ts`
 - `apps/networking/src/session/session-store.ts`
+- `apps/networking/src/history/history-store.ts`
 - `apps/api/src/index.ts` (REST + SSE)
 - `apps/desktop/` — Electron main/preload, `App.tsx`, `api.ts`,
-  `TransferVisualizer.tsx`, `ProtocolTimeline.tsx`
+  `TransferVisualizer.tsx`, `ProtocolTimeline.tsx`, `AnalyticsDashboard.tsx`,
+  `TransferHistory.tsx`, `charts.tsx`
 
-> This is the broadest module. If the group prefers even slices, hand the
-> Electron/React UI half to whoever has the lightest load, or split it as
-> *4a: Sync + SessionStore* and *4b: API + UI*.
+> This is the broadest module, and the history/analytics work has widened it
+> further. If the group prefers even slices, split it as
+> *4a: Sync engine + SessionStore* and
+> *4b: HistoryStore + API + UI (dashboard, charts, replay)*.
 
 **Must be able to explain:**
 - **Baseline model**: the last state both sides agreed on, persisted to
@@ -575,7 +585,22 @@ counter continue. Then show the checksum verification line in the log.
   discovery lookback). Explain *why* it exists: SSE has no history, so a UI
   opened late would see an empty screen.
 - **API design**: loopback-only bind, CORS allowlist, 1 MiB body cap, one SSE
-  endpoint multiplexing three event names.
+  endpoint multiplexing four event names — and one *client* EventSource fanned
+  out in `api.ts`. Explain why: a browser caps concurrent connections per
+  origin and an SSE connection is never released, so one stream per event type
+  starves the app's own fetches.
+- **HistoryStore**: the only durable store. `node:sqlite` (not
+  `better-sqlite3`, so there is no native module to rebuild against Electron's
+  ABI), WAL mode, schema versioned with `user_version`, upsert-keyed by
+  `transferId`. Explain why the engine *sweeps* the live transfer list on a
+  1 s debounce instead of persisting from a single event: a cancel or a
+  rejection emits no transfer event, and a missed event would lose the row
+  forever.
+- **Analytics honesty**: throughput is each transfer's bytes over its own
+  duration; the mean RTT is recovered from `SUM(rtt_avg × samples) / SUM(samples)`
+  so a 3-chunk file doesn't weigh as much as a 1000-chunk one. RTT is
+  sender-side only and skips resent chunks, because a retried chunk has no
+  unambiguous round trip.
 - **Electron process model**: main / preload / renderer, `contextIsolation:
   true`, `nodeIntegration: false`, and the `contextBridge` exposing exactly
   three IPC methods. Explain why the engine lives in the API process, not in
@@ -585,9 +610,12 @@ counter continue. Then show the checksum verification line in the log.
   events don't cause thousands of re-renders.
 
 **Demo:** Pair a folder across two machines, drop a file in, watch it appear on
-the other side within 5 s. Edit the same file on both sides while disconnected,
-reconnect, and show the conflict copy. Finish with a session replay stepping
-through the full protocol timeline.
+the other side within 5 s and name itself in the pair's file list. Edit the same
+file on both sides while disconnected, reconnect, and show the conflict copy.
+Then quit the app entirely, reopen it, and show the transfers still in Transfer
+History with the dashboard's throughput and RTT charts intact — the one piece of
+state that survives a restart. Finish with a session replay stepping through the
+full protocol timeline.
 
 ---
 
@@ -615,7 +643,9 @@ through the full protocol timeline.
 | 4-byte length-prefix framing | Simplest correct solution to TCP's stream semantics | Hand-rolled, needs the 16 MiB guard |
 | Engine owned by the API, not Electron | Exactly one engine per device; runs headless for testing | An extra process to manage |
 | SSE instead of WebSocket | Events are one-directional (engine → UI); SSE auto-reconnects and is simpler | Can't push UI → engine over it (REST handles that) |
-| In-memory state + JSON files | No DB setup; fast to build | History is lost on restart |
+| In-memory live state, SQLite for history | Live state stays simple; finished transfers survive a restart | Two places to look for a transfer |
+| `node:sqlite` over `better-sqlite3` | Keeps the zero-native-dependency property — no rebuild against Electron's ABI | Needs Node 22+ |
+| Sweep the transfer list, not one event | A cancel or rejection emits no transfer event; a missed event would lose a row permanently | Recording lags the event by up to 1 s |
 | Soft-state device registry | Self-healing, no explicit goodbye message needed | Up to 30 s to notice a departure |
 | Conflict copy over last-writer-wins | Never silently destroys a user's edit | Leaves manual cleanup to the user |
 | Hash only on size/mtime change | Keeps scanning a large folder cheap | Misses an edit that preserves both — rare in practice |
@@ -636,8 +666,12 @@ through the full protocol timeline.
 - A transfer interrupted by disconnect cannot resume from its last chunk after a
   restart; resume only works within a live session.
 - No automated tests. The `test-*.ts` files are manual harnesses.
-- Transfer history, sessions and the device registry are all in memory and lost
-  on restart.
+- Sessions and the device registry are still in memory and lost on restart; only
+  finished transfers are persisted.
+- RTT is measured on the **sending** side only, and only for chunks that were
+  never resent, so a received-only device reports no latency of its own.
+- History grows without bound — there is no retention policy or `VACUUM`, only
+  the manual *Clear history* button.
 
 **Networking**
 - LAN only. UDP broadcast does not cross subnets or routers; there is no relay,
@@ -690,11 +724,14 @@ Ordered by value-to-effort. The first three are what an examiner will ask about.
    on loopback.
 
 ### Tier 3 — Features on the roadmap
-8. **Persistence layer** *(Phase 12)* — SQLite over the originally-planned
-   MySQL: embedded, zero-config, right-sized for a desktop app. Tables for
-   devices, sessions, transfers, analytics.
-9. **Analytics dashboard** *(Phase 10)* — throughput, average speed, RTT, retry
-   counts, transfer duration; speed and latency charts over persisted history.
+8. **Extend the persistence layer** *(Phase 12, partly done)* — transfers,
+   sessions and devices are now stored in SQLite via `node:sqlite`. Still open:
+   persisting the *live* session timeline (today it is rebuilt in memory each
+   run), a retention policy, and `VACUUM` so the file does not grow forever.
+9. **Deepen the analytics** *(Phase 10, partly done)* — throughput, average
+   speed, RTT, retry counts and duration all ship, with per-day throughput and
+   latency charts. Still open: percentiles rather than means (a p95 RTT says
+   far more than an average), per-file-type breakdowns, and receiver-side RTT.
 10. **Filesystem watching** — replace the 5 s poll with `fs.watch` /
     `chokidar`-style events plus debouncing, for near-instant sync.
 11. **Selective sync** — ignore patterns, per-pair include/exclude rules,
@@ -738,11 +775,18 @@ INTEGRITY  SHA-256 over the whole file, checked before anything is written to di
 TIMERS     discover 10 s searching / 60 s connected · stale 3x interval
            sync scan 5 s · connect timeout 5 s · watchdog 1 s · clipboard poll 1 s
 STATE      identity  ~/.syncbridge/identity.json
+           history   ~/.syncbridge/history.db        (SQLite, survives restart)
            received  ~/SyncBridge/
            baselines ~/SyncBridge/sync-state/<pairId>.json
-EVENTS     protocol · transfer · sync · clipboard  →  SSE /api/events
+EVENTS     protocol · transfer · sync · clipboard  →  ONE SSE /api/events
+           (one EventSource, fanned out client-side: browsers cap
+            concurrent connections per origin, and SSE never releases one)
            →  SessionStore (50 sessions x 5000 events)
            →  /api/sessions/:id/timeline  and  /export (JSON/Markdown/Mermaid)
+HISTORY    terminal transfers swept into SQLite on a 1 s debounce
+           /api/history/transfers (paged, searchable) · /api/analytics
+           metrics: throughput = bytes / own duration · RTT = chunk→ack,
+           sender-side, excluding resent chunks
 RUN        npm run dev          (networking watch + api + vite)
            npm run desktop:electron
            npm run check        (typecheck all workspaces)

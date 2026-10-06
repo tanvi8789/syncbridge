@@ -45,6 +45,8 @@ import {
     SYNC_STATUS_LABEL,
 } from "./sync-activity";
 
+import { AnalyticsDashboard } from "./AnalyticsDashboard";
+import { TransferHistory } from "./TransferHistory";
 import { TransferVisualizer } from "./TransferVisualizer";
 import { SessionReplay } from "./ProtocolTimeline";
 
@@ -140,6 +142,14 @@ function App() {
 
     const [syncEvents, setSyncEvents] =
         useState<SyncEvent[]>([]);
+
+    /*
+     * Bumped when a transfer reaches a terminal state. History and
+     * analytics are read from a database rather than the live event
+     * stream, so they need an explicit nudge to refetch.
+     */
+    const [historyVersion, setHistoryVersion] =
+        useState(0);
 
     const [collapsedSections, setCollapsedSections] =
         useState<Record<string, boolean>>(() => {
@@ -297,6 +307,19 @@ function App() {
                     event.type === "TRANSFER_COMPLETED"
                 ) {
                     void getTransfers().then(setTransfers).catch(() => {});
+
+                    if (event.type === "TRANSFER_COMPLETED") {
+                        /*
+                         * The engine persists on a 1 s debounce, so
+                         * give it a moment before asking for the
+                         * row that was just written.
+                         */
+                        setTimeout(
+                            () => setHistoryVersion((value) => value + 1),
+                            1200
+                        );
+                    }
+
                     return;
                 }
 
@@ -1695,6 +1718,20 @@ function App() {
                         </div>
                     )}
                 </section>
+
+                <TransferHistory
+                    collapsed={collapsedSections.history === true}
+                    onToggle={() => toggleSection("history")}
+                    explainMode={explainMode}
+                    refreshKey={historyVersion}
+                />
+
+                <AnalyticsDashboard
+                    collapsed={collapsedSections.analytics === true}
+                    onToggle={() => toggleSection("analytics")}
+                    explainMode={explainMode}
+                    refreshKey={historyVersion}
+                />
             </main>
 
             {selectedTransferId && (() => {

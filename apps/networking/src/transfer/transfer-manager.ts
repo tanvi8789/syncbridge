@@ -747,7 +747,7 @@ export class TransferManager {
             transfer.lastProgressAt = Date.now();
         }
 
-        this.sender.notifyAck(ack.transferId);
+        this.sender.notifyAck(ack.transferId, ack.chunkIndex, transfer);
 
         this.onEvent?.({
             transferId: ack.transferId,

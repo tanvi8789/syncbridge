@@ -8,6 +8,34 @@ import type { TransferEvent } from "./transfer/transfer-event";
 import type { SyncEvent } from "./sync/sync-event";
 import type { ClipboardEvent } from "./clipboard/clipboard-event";
 import { SessionStore } from "./session/session-store";
+import {
+    HistoryStore,
+    isTerminalTransferState,
+    type HistoryQuery,
+    type Analytics,
+} from "./history/history-store";
+
+/** What /api/analytics returns when the database is unavailable. */
+const EMPTY_ANALYTICS = (since?: number): Analytics => ({
+    since,
+    generatedAt: Date.now(),
+    totals: {
+        transfers: 0,
+        succeeded: 0,
+        failed: 0,
+        bytes: 0,
+        bytesSent: 0,
+        bytesReceived: 0,
+        totalRetries: 0,
+        transfersWithRetries: 0,
+    },
+    throughput: {},
+    latency: { samples: 0 },
+    byPeer: [],
+    byDay: [],
+    sessions: { total: 0 },
+    devicesSeen: 0,
+});
 
 export class NetworkingEngine extends EventEmitter {
     readonly deviceIdentity: DeviceIdentity;
@@ -15,6 +43,21 @@ export class NetworkingEngine extends EventEmitter {
     readonly connectionManager: ConnectionManager;
     readonly tcpServer: TcpServer;
     private readonly sessionStore: SessionStore;
+    /*
+     * Undefined when the database could not be opened (a locked
+     * file, a read-only home). History is a convenience, not a
+     * prerequisite for transferring files, so the engine runs
+     * without it rather than refusing to start.
+     */
+    private readonly historyStore?: HistoryStore;
+
+    private historySweepTimer?: NodeJS.Timeout;
+
+    /*
+     * The last state each transfer was persisted in, so a sweep
+     * that sees the same finished transfers again does no work.
+     */
+    private recordedTransferStates = new Map<string, string>();
 
     constructor() {
         super();
@@ -50,6 +93,14 @@ export class NetworkingEngine extends EventEmitter {
             );
 
         this.sessionStore = new SessionStore(this);
+        try {
+            this.historyStore = new HistoryStore();
+        } catch (error) {
+            console.error(
+                "[HISTORY] Disabled — could not open the database:",
+                error
+            );
+        }
     }
 
     getSessions() {
@@ -64,6 +115,35 @@ export class NetworkingEngine extends EventEmitter {
         return this.sessionStore.getSessionExport(sessionId);
     }
 
+    getHistory(query?: HistoryQuery) {
+        /*
+         * Flushed first so a transfer that just finished is in the
+         * page the caller is about to render, rather than appearing
+         * a second later when the debounce fires.
+         */
+        this.sweepHistory();
+
+        return (
+            this.historyStore?.getTransfers(query) ?? {
+                transfers: [],
+                total: 0,
+                limit: query?.limit ?? 50,
+                offset: query?.offset ?? 0,
+            }
+        );
+    }
+
+    getAnalytics(since?: number) {
+        this.sweepHistory();
+
+        return this.historyStore?.getAnalytics(since) ?? EMPTY_ANALYTICS(since);
+    }
+
+    clearHistory(): void {
+        this.historyStore?.clear();
+        this.recordedTransferStates.clear();
+    }
+
     async start(): Promise<void> {
         await this.discovery.start();
 
@@ -74,6 +154,15 @@ export class NetworkingEngine extends EventEmitter {
         this.discovery.stop();
 
         this.tcpServer.stop();
+
+        if (this.historySweepTimer) {
+            clearTimeout(this.historySweepTimer);
+            this.historySweepTimer = undefined;
+        }
+
+        // Last chance to persist anything that finished recently.
+        this.sweepHistory();
+        this.historyStore?.close();
     }
 
     getDeviceInfo() {
@@ -127,6 +216,10 @@ export class NetworkingEngine extends EventEmitter {
 
     cancelTransfer(transferId: string): void {
         this.connectionManager.cancelTransfer(transferId);
+
+        // Cancelling emits no transfer event, so history would
+        // otherwise not learn the transfer had ended.
+        this.scheduleHistorySweep();
     }
 
     createSyncPair(
@@ -189,6 +282,7 @@ export class NetworkingEngine extends EventEmitter {
             event.type === "CONNECTION_CLOSED"
         ) {
             this.syncDiscoveryCadence();
+            this.scheduleHistorySweep();
         }
 
         this.emit("protocol-event", event);
@@ -203,7 +297,97 @@ export class NetworkingEngine extends EventEmitter {
     }
 
     private publishTransferEvent(event: TransferEvent): void {
+        if (
+            event.type === "TRANSFER_COMPLETED" ||
+            event.type === "TRANSFER_VERIFIED"
+        ) {
+            this.scheduleHistorySweep();
+        }
+
         this.emit("transfer-event", event);
+    }
+
+    /**
+     * Persist whatever has reached a terminal state.
+     *
+     * This sweeps the live transfer list rather than persisting from
+     * one specific event, because not every ending is evented — a
+     * cancel or a rejection produces no transfer event at all, and a
+     * missed event would mean a transfer silently absent from
+     * history forever.
+     */
+    private sweepHistory(): void {
+        const store = this.historyStore;
+
+        if (!store) {
+            return;
+        }
+
+        const names = new Map<string, string | undefined>();
+
+        for (const connection of this.connectionManager.getConnections()) {
+            names.set(connection.deviceId, connection.deviceName);
+        }
+
+        for (const device of this.discovery.getDevices()) {
+            if (!names.has(device.deviceId)) {
+                names.set(device.deviceId, device.deviceName);
+            }
+
+            store.recordDevice({
+                deviceId: device.deviceId,
+                deviceName: device.deviceName,
+                platform: device.platform,
+            });
+        }
+
+        for (const transfer of this.connectionManager.getTransfers()) {
+            if (!isTerminalTransferState(transfer.state)) {
+                continue;
+            }
+
+            if (
+                this.recordedTransferStates.get(transfer.transferId) ===
+                transfer.state
+            ) {
+                continue;
+            }
+
+            store.recordTransfer(
+                transfer,
+                names.get(transfer.peerDeviceId)
+            );
+
+            this.recordedTransferStates.set(
+                transfer.transferId,
+                transfer.state
+            );
+        }
+
+        for (const summary of this.sessionStore.getSessions()) {
+            store.recordSession({
+                ...summary,
+                peerDeviceName:
+                    summary.peerDeviceName ??
+                    names.get(summary.peerDeviceId),
+            });
+        }
+    }
+
+    private scheduleHistorySweep(): void {
+        if (this.historySweepTimer) {
+            return;
+        }
+
+        /*
+         * Coalesced: a multi-file sync finishes many transfers at
+         * once, and each one would otherwise trigger its own pass
+         * over the whole transfer list.
+         */
+        this.historySweepTimer = setTimeout(() => {
+            this.historySweepTimer = undefined;
+            this.sweepHistory();
+        }, 1000);
     }
 
     private publishSyncEvent(event: SyncEvent): void {

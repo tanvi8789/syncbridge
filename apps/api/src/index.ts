@@ -775,6 +775,106 @@ async function start(): Promise<void> {
                     }
 
                     // -------------------------
+                    // Saved history and analytics
+                    // -------------------------
+
+                    /*
+                     * These are the only routes that take query
+                     * parameters, so the URL is parsed here rather
+                     * than compared as a literal string.
+                     */
+                    const historyUrl = request.url
+                        ? new URL(request.url, "http://127.0.0.1")
+                        : undefined;
+
+                    if (
+                        request.method === "GET" &&
+                        historyUrl?.pathname === "/api/history/transfers"
+                    ) {
+                        const params = historyUrl.searchParams;
+
+                        const intParam = (
+                            name: string
+                        ): number | undefined => {
+                            const raw = params.get(name);
+
+                            if (raw === null) {
+                                return undefined;
+                            }
+
+                            const parsed = Number(raw);
+
+                            return Number.isFinite(parsed)
+                                ? parsed
+                                : undefined;
+                        };
+
+                        const direction = params.get("direction");
+
+                        response.writeHead(200);
+
+                        response.end(
+                            JSON.stringify(
+                                networking.getHistory({
+                                    limit: intParam("limit"),
+                                    offset: intParam("offset"),
+                                    since: intParam("since"),
+                                    peerDeviceId:
+                                        params.get("peerDeviceId") ??
+                                        undefined,
+                                    direction:
+                                        direction === "sent" ||
+                                        direction === "received"
+                                            ? direction
+                                            : undefined,
+                                    search:
+                                        params.get("search") ?? undefined,
+                                })
+                            )
+                        );
+
+                        return;
+                    }
+
+                    if (
+                        request.method === "GET" &&
+                        historyUrl?.pathname === "/api/analytics"
+                    ) {
+                        const rawSince =
+                            historyUrl.searchParams.get("since");
+
+                        const since =
+                            rawSince !== null && Number.isFinite(Number(rawSince))
+                                ? Number(rawSince)
+                                : undefined;
+
+                        response.writeHead(200);
+
+                        response.end(
+                            JSON.stringify(
+                                networking.getAnalytics(since)
+                            )
+                        );
+
+                        return;
+                    }
+
+                    if (
+                        request.method === "DELETE" &&
+                        historyUrl?.pathname === "/api/history"
+                    ) {
+                        networking.clearHistory();
+
+                        response.writeHead(200);
+
+                        response.end(
+                            JSON.stringify({ status: "cleared" })
+                        );
+
+                        return;
+                    }
+
+                    // -------------------------
                     // Protocol timeline / sessions
                     // -------------------------
 

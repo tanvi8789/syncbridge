@@ -41,6 +41,17 @@ export interface Transfer {
     lastProgressAt?: number;
 
     /**
+     * Chunk-ack round-trip statistics, accumulated on the sending
+     * side only (the receiver never learns when a chunk was sent).
+     * Kept as a running total rather than an average so samples can
+     * be folded in without rescanning.
+     */
+    rttSamples?: number;
+    rttTotalMs?: number;
+    rttMinMs?: number;
+    rttMaxMs?: number;
+
+    /**
      * Present when this transfer was queued by the sync engine
      * rather than a manual send, so the UI can label it accordingly.
      */

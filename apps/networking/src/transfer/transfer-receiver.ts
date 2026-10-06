@@ -135,6 +135,14 @@ export class TransferReceiver {
         transfer.checksum = metadata.checksum;
         transfer.state = "TRANSFERRING";
 
+        /*
+         * The sender stamps startedAt when it begins sending; the
+         * receiver has to stamp its own, from the moment metadata
+         * lands. Without it an incoming transfer has no duration,
+         * and so no throughput, in the saved history.
+         */
+        transfer.startedAt ??= Date.now();
+
         this.transfers.set(
             metadata.transferId,
             transfer

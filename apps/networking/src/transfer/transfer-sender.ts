@@ -32,6 +32,13 @@ interface SendControl {
     highestSentIndex: number;
     lastAckAt: number;
     lastProgressEmitAt: number;
+
+    /*
+     * When each in-flight chunk went out, so an arriving ack can be
+     * turned into a round-trip sample. Entries are deleted as acks
+     * land, so this only ever holds the unacknowledged window.
+     */
+    sentAt: Map<number, number>;
 }
 
 export class TransferSender {
@@ -113,6 +120,7 @@ export class TransferSender {
             highestSentIndex: -1,
             lastAckAt: Date.now(),
             lastProgressEmitAt: 0,
+            sentAt: new Map(),
         };
 
         this.activeSends.set(
@@ -284,17 +292,58 @@ export class TransferSender {
      * for a transfer this sender is driving.
      */
     notifyAck(
-        transferId: string
+        transferId: string,
+        chunkIndex?: number,
+        transfer?: Transfer
     ): void {
         const control =
             this.activeSends.get(
                 transferId
             );
 
-        if (control) {
-            control.lastAckAt =
-                Date.now();
+        if (!control) {
+            return;
         }
+
+        const now = Date.now();
+
+        control.lastAckAt = now;
+
+        if (chunkIndex === undefined) {
+            return;
+        }
+
+        const sentAt = control.sentAt.get(chunkIndex);
+
+        if (sentAt === undefined) {
+            /*
+             * A duplicate ack, or an ack for a chunk that was
+             * resent — either way there's no honest send time to
+             * measure against, so it isn't sampled.
+             */
+            return;
+        }
+
+        control.sentAt.delete(chunkIndex);
+
+        if (!transfer) {
+            return;
+        }
+
+        const rtt = now - sentAt;
+
+        transfer.rttSamples = (transfer.rttSamples ?? 0) + 1;
+        transfer.rttTotalMs = (transfer.rttTotalMs ?? 0) + rtt;
+
+        transfer.rttMinMs =
+            transfer.rttMinMs === undefined
+                ? rtt
+                : Math.min(transfer.rttMinMs, rtt);
+
+        transfer.rttMaxMs =
+            transfer.rttMaxMs === undefined
+                ? rtt
+                : Math.max(transfer.rttMaxMs, rtt);
     }
 
     pause(
@@ -397,6 +446,16 @@ export class TransferSender {
                 Date.now(),
         };
 
+        /*
+         * Stamped before the write so an arriving ack can be scored
+         * against it. A resend clears the entry rather than
+         * overwriting it, because a retried chunk has no
+         * unambiguous round trip to measure.
+         */
+        this.activeSends
+            .get(transfer.transferId)
+            ?.sentAt.set(chunkIndex, Date.now());
+
         const wroteImmediately =
             this.sendMessage(
                 socket,
@@ -470,6 +529,8 @@ export class TransferSender {
                 chunkIndex,
                 totalChunks
             );
+
+            control.sentAt.delete(chunkIndex);
 
             transfer.retryCount += 1;
 

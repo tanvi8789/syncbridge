@@ -1081,13 +1081,32 @@
     color: #2c3238;
 }
 
+/*
+ * Drawn with a rotated border rather than the ▾ glyph, which
+ * renders as a near-invisible dot at this size. font-size: 0
+ * hides the character the markup still carries.
+ */
 .chevron {
+    position: relative;
     display: inline-block;
-    width: 12px;
-    color: #9aa0a6;
-    font-size: 11px;
-    line-height: 1;
+    width: 11px;
+    height: 11px;
+    flex-shrink: 0;
+    color: #8b9198;
+    font-size: 0;
     transition: transform 120ms ease;
+}
+
+.chevron::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
 }
 
 .chevron.collapsed {
@@ -1213,3 +1232,582 @@
     background: #f2eafd;
     color: #5a2b9c;
 }
+
+/* -------------------------------------------------
+   Analytics dashboard
+   -------------------------------------------------
+   Colour roles are declared once here and referenced
+   by role throughout, so the palette is swappable in
+   one place. Series hues are the validated
+   categorical slots 1 (blue) and 2 (orange).
+   ------------------------------------------------- */
+
+.viz {
+    --viz-surface: #ffffff;
+    --viz-grid: #e6e8eb;
+    --viz-ink: #2c3238;
+    --viz-ink-2: #60666d;
+    --viz-ink-3: #9aa0a6;
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+}
+
+.viz-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.range-button {
+    padding: 5px 10px;
+    border: 1px solid #e1e3e6;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #60666d;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.range-button:hover {
+    border-color: #c8ccd0;
+}
+
+.range-button.active {
+    border-color: var(--series-1);
+    background: #eef4fd;
+    color: #1b4fa8;
+}
+
+/* ---- Stat tiles ---- */
+
+.stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.stat-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px;
+    border: 1px solid #e6e8eb;
+    border-radius: 10px;
+    background: #fbfcfd;
+}
+
+.stat-tile-label {
+    color: var(--viz-ink-2);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.stat-tile-value {
+    color: var(--viz-ink);
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.15;
+}
+
+.stat-tile-hero .stat-tile-value {
+    font-size: 30px;
+}
+
+.stat-tile-hint {
+    color: var(--viz-ink-3);
+    font-size: 11px;
+}
+
+/* ---- Figures ---- */
+
+.viz-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 18px;
+}
+
+.viz-figure {
+    margin: 0;
+    min-width: 0;
+}
+
+.viz-figure-wide {
+    grid-column: 1 / -1;
+}
+
+.viz-figure figcaption {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 12px;
+}
+
+.viz-figure figcaption strong {
+    color: var(--viz-ink);
+    font-size: 13px;
+}
+
+.viz-figure figcaption span {
+    color: var(--viz-ink-3);
+    font-size: 11px;
+}
+
+.viz-empty,
+.viz-single {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0;
+    padding: 20px 0;
+    color: var(--viz-ink-3);
+    font-size: 12px;
+}
+
+.viz-single strong {
+    color: var(--viz-ink);
+    font-size: 20px;
+}
+
+/* ---- Plot chrome ---- */
+
+.viz-plot {
+    position: relative;
+}
+
+.viz-svg {
+    display: block;
+    width: 100%;
+    height: 160px;
+    overflow: visible;
+}
+
+.viz-grid-line,
+line.viz-gridline {
+    stroke: var(--viz-grid);
+    stroke-width: 1;
+}
+
+.viz-bar {
+    fill: var(--series-1);
+}
+
+.viz-plot rect[tabindex]:hover ~ .viz-bar,
+.viz-plot g:hover .viz-bar {
+    fill: #1b5fb8;
+}
+
+.viz-line {
+    fill: none;
+    stroke: var(--series-1);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+
+.viz-area-top {
+    stop-color: var(--series-1);
+    stop-opacity: 0.14;
+}
+
+.viz-area-bottom {
+    stop-color: var(--series-1);
+    stop-opacity: 0.02;
+}
+
+.viz-crosshair {
+    stroke: var(--viz-ink-3);
+    stroke-width: 1;
+}
+
+.viz-markers {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+/* A 2px surface ring keeps the marker legible over the line. */
+.viz-marker {
+    position: absolute;
+    width: 9px;
+    height: 9px;
+    margin: -4.5px 0 0 -4.5px;
+    border-radius: 50%;
+    background: var(--series-1);
+    box-shadow: 0 0 0 2px var(--viz-surface);
+}
+
+.viz-axis-x {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    color: var(--viz-ink-3);
+    font-size: 10px;
+}
+
+.viz-axis-max {
+    position: absolute;
+    top: -2px;
+    right: 0;
+    color: var(--viz-ink-3);
+    font-size: 10px;
+}
+
+.viz-tooltip {
+    position: absolute;
+    top: -6px;
+    transform: translate(-50%, -100%);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: #1f2429;
+    color: #ffffff;
+    font-size: 11px;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 5;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
+.viz-tooltip strong {
+    font-size: 13px;
+}
+
+.viz-tooltip span {
+    color: #b9bec4;
+}
+
+/* ---- Ranked horizontal bars ---- */
+
+.viz-ranked {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.viz-ranked li {
+    display: grid;
+    grid-template-columns: minmax(80px, 150px) 1fr auto;
+    align-items: center;
+    gap: 12px;
+}
+
+.viz-ranked-label {
+    color: var(--viz-ink-2);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.viz-ranked-track .viz-svg {
+    height: 12px;
+}
+
+.viz-ranked-value {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    color: var(--viz-ink);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.viz-ranked-value small {
+    color: var(--viz-ink-3);
+    font-size: 10px;
+    font-weight: 400;
+}
+
+/* ---- Split bar ---- */
+
+.viz-split-track {
+    display: flex;
+    height: 24px;
+    border-radius: 4px;
+    overflow: hidden;
+    /* The surface shows through as the 2px gap between segments. */
+    gap: 2px;
+    background: var(--viz-surface);
+}
+
+.viz-split-fill {
+    display: block;
+    min-width: 2px;
+}
+
+.viz-series-1 {
+    background: var(--series-1);
+}
+
+.viz-series-2 {
+    background: var(--series-2);
+}
+
+.viz-legend {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.viz-legend li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+}
+
+.viz-legend-label {
+    color: var(--viz-ink-2);
+}
+
+.viz-legend strong {
+    color: var(--viz-ink);
+}
+
+.viz-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+}
+
+/* ---- Footer and table view ---- */
+
+.viz-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid #eceef0;
+}
+
+.viz-footer .section-toggle {
+    color: var(--viz-ink-2);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.viz-table {
+    width: 100%;
+    margin-top: 12px;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.viz-table th {
+    padding: 7px 8px;
+    border-bottom: 1px solid #e6e8eb;
+    color: var(--viz-ink-3);
+    font-size: 10px;
+    font-weight: 700;
+    text-align: left;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.viz-table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid #f1f3f5;
+    color: var(--viz-ink-2);
+}
+
+.viz-table td:first-child {
+    color: var(--viz-ink);
+    font-weight: 600;
+}
+
+/* -------------------------------------------------
+   Saved transfer history
+   ------------------------------------------------- */
+
+.history-filters {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+
+.history-filters .sync-name-input {
+    flex: 1;
+    min-width: 160px;
+}
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.history-row {
+    border: 1px solid #e6e8eb;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.history-row.expanded {
+    border-color: #d4d8dc;
+}
+
+.history-row-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 14px;
+    border: none;
+    background: none;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.history-row-main:hover {
+    background: #fafbfc;
+}
+
+.history-row-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.history-row-info strong {
+    color: #2c3238;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-row-info span {
+    color: #868c94;
+    font-size: 11px;
+}
+
+.history-detail {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 12px;
+    margin: 0;
+    padding: 14px;
+    border-top: 1px solid #eceef0;
+    background: #fafbfc;
+}
+
+.history-detail-wide {
+    grid-column: 1 / -1;
+}
+
+.history-detail dt {
+    color: #9aa0a6;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.history-detail dd {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 3px 0 0;
+    color: #2c3238;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.history-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    margin-top: 14px;
+    color: #868c94;
+    font-size: 12px;
+}
+
+/* ---- Columns (HTML, so the 24px mark cap is real pixels) ---- */
+
+.viz-columns {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    /* The surface showing through is the 2px separator. */
+    gap: 2px;
+    height: 160px;
+}
+
+.viz-gridlines {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    pointer-events: none;
+}
+
+.viz-gridlines span {
+    height: 1px;
+    background: var(--viz-grid);
+}
+
+.viz-column {
+    position: relative;
+    flex: 1 1 0;
+    /* Cap the mark; the band's leftover width stays as air. */
+    max-width: 24px;
+    height: 100%;
+    display: flex;
+    align-items: flex-end;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: default;
+}
+
+.viz-column-fill {
+    width: 100%;
+    /* Rounded data-end, square at the baseline. */
+    border-radius: 4px 4px 0 0;
+    background: var(--series-1);
+    transition: background 120ms ease;
+}
+
+.viz-column:hover .viz-column-fill,
+.viz-column:focus-visible .viz-column-fill {
+    background: #1b5fb8;
+}
+
+.viz-ranked-track {
+    position: relative;
+    display: block;
+    height: 12px;
+    border-radius: 2px;
+    background: #f1f3f5;
+    overflow: hidden;
+}
+
+.viz-ranked-fill {
+    display: block;
+    height: 100%;
+    border-radius: 0 4px 4px 0;
+    background: var(--series-1);
+}
+

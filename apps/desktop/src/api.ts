@@ -1,5 +1,131 @@
 const API_BASE_URL = "http://127.0.0.1:41235";
 
+/* ---------------------------------------------------------------
+   Shared event stream
+   ---------------------------------------------------------------
+   The API multiplexes every event type over a single
+   /api/events endpoint, tagged by event name, so the client opens
+   exactly one EventSource and fans out from it.
+
+   This matters more than it looks: an EventSource is a long-lived
+   HTTP/1.1 connection that is never released, and browsers cap
+   concurrent connections per origin at six. One stream per event
+   type burned four of those permanently, which left too few
+   sockets for the app's own parallel fetches and made whichever
+   request lost the race hang forever.
+   --------------------------------------------------------------- */
+
+type StreamListener = (data: unknown) => void;
+
+let sharedStream: EventSource | null = null;
+
+const streamListeners = new Map<string, Set<StreamListener>>();
+const streamErrorListeners = new Set<() => void>();
+
+/** Event names already wired to the current stream. */
+const attachedNames = new Set<string>();
+
+function openSharedStream(): EventSource {
+    if (sharedStream) {
+        return sharedStream;
+    }
+
+    const source = new EventSource(`${API_BASE_URL}/api/events`);
+
+    /*
+     * Re-attach the names already subscribed. attachedNames is
+     * cleared with the stream, so reopening after the last
+     * unsubscribe starts from a clean slate.
+     */
+    for (const name of streamListeners.keys()) {
+        attachStreamEvent(source, name);
+    }
+
+    source.onerror = () => {
+        for (const listener of streamErrorListeners) {
+            listener();
+        }
+    };
+
+    sharedStream = source;
+
+    return source;
+}
+
+function attachStreamEvent(source: EventSource, name: string): void {
+    /*
+     * Attaching the same name twice would deliver every event
+     * twice — which, for a list keyed by event id, renders the
+     * same key in React more than once.
+     */
+    if (attachedNames.has(name)) {
+        return;
+    }
+
+    attachedNames.add(name);
+
+    source.addEventListener(name, (message) => {
+        let parsed: unknown;
+
+        try {
+            parsed = JSON.parse((message as MessageEvent<string>).data);
+        } catch {
+            // Ignore a malformed event and keep the stream connected.
+            return;
+        }
+
+        for (const listener of streamListeners.get(name) ?? []) {
+            listener(parsed);
+        }
+    });
+}
+
+function subscribeToStream<T>(
+    eventName: string,
+    onEvent: (event: T) => void,
+    onError?: () => void
+): () => void {
+    const listener: StreamListener = (data) => onEvent(data as T);
+
+    let listeners = streamListeners.get(eventName);
+
+    if (!listeners) {
+        listeners = new Set();
+        streamListeners.set(eventName, listeners);
+    }
+
+    listeners.add(listener);
+
+    if (onError) {
+        streamErrorListeners.add(onError);
+    }
+
+    attachStreamEvent(openSharedStream(), eventName);
+
+    return () => {
+        listeners.delete(listener);
+
+        if (onError) {
+            streamErrorListeners.delete(onError);
+        }
+
+        /*
+         * The last subscriber closes the stream, so a fully
+         * unmounted UI doesn't hold a connection open.
+         */
+        const stillInUse = Array.from(streamListeners.values()).some(
+            (set) => set.size > 0
+        );
+
+        if (!stillInUse && sharedStream) {
+            sharedStream.close();
+            sharedStream = null;
+            streamListeners.clear();
+            attachedNames.clear();
+        }
+    };
+}
+
 export interface ProtocolEvent {
     id: string;
     timestamp: number;
@@ -292,28 +418,7 @@ export function subscribeToTransferEvents(
     onEvent: (event: TransferEvent) => void,
     onError?: () => void
 ): () => void {
-    const events = new EventSource(
-        `${API_BASE_URL}/api/events`
-    );
-
-    events.addEventListener(
-        "transfer-event",
-        (message) => {
-            try {
-                onEvent(
-                    JSON.parse(
-                        (message as MessageEvent<string>).data
-                    ) as TransferEvent
-                );
-            } catch {
-                // Ignore a malformed event and keep the stream connected.
-            }
-        }
-    );
-
-    events.onerror = () => onError?.();
-
-    return () => events.close();
+    return subscribeToStream<TransferEvent>("transfer-event", onEvent, onError);
 }
 
 export function getSyncPairs(): Promise<SyncPair[]> {
@@ -365,56 +470,14 @@ export function subscribeToSyncEvents(
     onEvent: (event: SyncEvent) => void,
     onError?: () => void
 ): () => void {
-    const events = new EventSource(
-        `${API_BASE_URL}/api/events`
-    );
-
-    events.addEventListener(
-        "sync-event",
-        (message) => {
-            try {
-                onEvent(
-                    JSON.parse(
-                        (message as MessageEvent<string>).data
-                    ) as SyncEvent
-                );
-            } catch {
-                // Ignore a malformed event and keep the stream connected.
-            }
-        }
-    );
-
-    events.onerror = () => onError?.();
-
-    return () => events.close();
+    return subscribeToStream<SyncEvent>("sync-event", onEvent, onError);
 }
 
 export function subscribeToProtocolEvents(
     onEvent: (event: ProtocolEvent) => void,
     onError?: () => void
 ): () => void {
-    const events = new EventSource(
-        `${API_BASE_URL}/api/events`
-    );
-
-    events.addEventListener(
-        "protocol-event",
-        (message) => {
-            try {
-                onEvent(
-                    JSON.parse(
-                        (message as MessageEvent<string>).data
-                    ) as ProtocolEvent
-                );
-            } catch {
-                // Ignore a malformed event and keep the stream connected.
-            }
-        }
-    );
-
-    events.onerror = () => onError?.();
-
-    return () => events.close();
+    return subscribeToStream<ProtocolEvent>("protocol-event", onEvent, onError);
 }
 
 export function getSessions(): Promise<SessionSummary[]> {
@@ -503,28 +566,7 @@ export function subscribeToClipboardEvents(
     onEvent: (event: ClipboardEvent) => void,
     onError?: () => void
 ): () => void {
-    const events = new EventSource(
-        `${API_BASE_URL}/api/events`
-    );
-
-    events.addEventListener(
-        "clipboard-event",
-        (message) => {
-            try {
-                onEvent(
-                    JSON.parse(
-                        (message as MessageEvent<string>).data
-                    ) as ClipboardEvent
-                );
-            } catch {
-                // Ignore a malformed event and keep the stream connected.
-            }
-        }
-    );
-
-    events.onerror = () => onError?.();
-
-    return () => events.close();
+    return subscribeToStream<ClipboardEvent>("clipboard-event", onEvent, onError);
 }
 
 // -------------------------
@@ -558,4 +600,149 @@ export function getSessionExport(
     return fetchApi<SessionExport>(
         `/api/sessions/${sessionId}/export`
     );
+}
+
+/* ---------------------------------------------------------------
+   Saved transfer history and analytics
+   --------------------------------------------------------------- */
+
+export interface HistoryTransfer {
+    transferId: string;
+    direction: "sent" | "received";
+
+    peerDeviceId: string;
+    peerDeviceName?: string;
+
+    fileName: string;
+    fileSize: number;
+    totalChunks: number;
+
+    checksum?: string;
+    savedPath?: string;
+
+    syncPairId?: string;
+    relativePath?: string;
+    sessionId?: string;
+
+    state: string;
+    succeeded: boolean;
+
+    startedAt?: number;
+    completedAt: number;
+    durationMs?: number;
+
+    bytesTransferred: number;
+    retryCount: number;
+    throughputBps?: number;
+
+    rttAvgMs?: number;
+    rttMinMs?: number;
+    rttMaxMs?: number;
+    rttSamples?: number;
+}
+
+export interface HistoryPage {
+    transfers: HistoryTransfer[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+export interface HistoryQuery {
+    limit?: number;
+    offset?: number;
+    since?: number;
+    peerDeviceId?: string;
+    direction?: "sent" | "received";
+    search?: string;
+}
+
+export interface AnalyticsPeer {
+    peerDeviceId: string;
+    peerDeviceName?: string;
+    transfers: number;
+    bytes: number;
+    avgThroughputBps?: number;
+}
+
+export interface AnalyticsBucket {
+    bucketStart: number;
+    transfers: number;
+    bytes: number;
+    avgThroughputBps?: number;
+    avgRttMs?: number;
+}
+
+export interface Analytics {
+    since?: number;
+    generatedAt: number;
+
+    totals: {
+        transfers: number;
+        succeeded: number;
+        failed: number;
+        successRate?: number;
+        bytes: number;
+        bytesSent: number;
+        bytesReceived: number;
+        totalRetries: number;
+        transfersWithRetries: number;
+    };
+
+    throughput: {
+        avgBps?: number;
+        peakBps?: number;
+        avgDurationMs?: number;
+    };
+
+    latency: {
+        avgRttMs?: number;
+        minRttMs?: number;
+        maxRttMs?: number;
+        samples: number;
+    };
+
+    largestTransfer?: {
+        fileName: string;
+        fileSize: number;
+        throughputBps?: number;
+    };
+
+    byPeer: AnalyticsPeer[];
+    byDay: AnalyticsBucket[];
+
+    sessions: {
+        total: number;
+        avgDurationMs?: number;
+    };
+
+    devicesSeen: number;
+}
+
+export function getHistory(
+    query: HistoryQuery = {}
+): Promise<HistoryPage> {
+    const params = new URLSearchParams();
+
+    for (const [key, value] of Object.entries(query)) {
+        if (value !== undefined && value !== "") {
+            params.set(key, String(value));
+        }
+    }
+
+    const suffix = params.toString();
+
+    return fetchApi<HistoryPage>(
+        `/api/history/transfers${suffix ? `?${suffix}` : ""}`
+    );
+}
+
+export function getAnalytics(since?: number): Promise<Analytics> {
+    return fetchApi<Analytics>(
+        `/api/analytics${since !== undefined ? `?since=${since}` : ""}`
+    );
+}
+
+export function clearHistory(): Promise<{ status: string }> {
+    return fetchApi("/api/history", { method: "DELETE" });
 }
