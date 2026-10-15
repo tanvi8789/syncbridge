@@ -12,7 +12,7 @@ function timeOf(timestamp: number): string {
 
 function durationOf(ms: number | undefined): string {
     if (ms === undefined) {
-        return "—";
+        return "n/a";
     }
 
     if (ms < 1000) {
@@ -36,7 +36,7 @@ export function toMarkdown(
 ): string {
     const lines: string[] = [];
 
-    lines.push(`# SyncBridge session — ${peerLabel}`);
+    lines.push(`# SyncBridge session: ${peerLabel}`);
     lines.push("");
     lines.push(`- **Session ID:** \`${data.session.sessionId}\``);
     lines.push(

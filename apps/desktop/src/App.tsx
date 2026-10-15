@@ -20,6 +20,9 @@ import {
     removeSyncPair,
     startTransfer,
     getClipboard,
+    pauseTransfer,
+    resumeTransfer,
+    cancelTransfer,
     getPairing,
     cancelPairing,
     removeTrustedDevice,
@@ -54,6 +57,11 @@ import {
     SYNC_STATUS_LABEL,
 } from "./sync-activity";
 
+import { NetworkMap, type MapPeer, type PeerStatus } from "./NetworkMap";
+import { ToastStack, type Toast, type ToastKind } from "./Toasts";
+import { TransferCard } from "./TransferCard";
+import { isLiveTransfer } from "./transfer-status";
+import { formatBytes } from "./format";
 import { PairingDialog } from "./PairingDialog";
 import { SendOptionsDialog, UnlockDialog } from "./PinDialog";
 import { TrustedDevices } from "./TrustedDevices";
@@ -62,9 +70,65 @@ import { TransferHistory } from "./TransferHistory";
 import { TransferVisualizer } from "./TransferVisualizer";
 import { SessionReplay } from "./ProtocolTimeline";
 
-import "./App.css";
 
 const MAX_SYNC_EVENTS = 200;
+const VIEW_KEY = "syncbridge.view";
+const THEME_KEY = "syncbridge.theme";
+
+type ViewId =
+    | "devices"
+    | "transfers"
+    | "sync"
+    | "clipboard"
+    | "protocol"
+    | "analytics";
+
+type ThemePref = "system" | "light" | "dark";
+
+const NAV: Array<{ id: ViewId; label: string; title: string; subtitle: string }> = [
+    {
+        id: "devices",
+        label: "Devices",
+        title: "Devices",
+        subtitle: "Machines on your network that are running SyncBridge.",
+    },
+    {
+        id: "transfers",
+        label: "Transfers",
+        title: "Transfers",
+        subtitle: "Send files, follow their progress and unlock sensitive ones.",
+    },
+    {
+        id: "sync",
+        label: "Folder sync",
+        title: "Folder sync",
+        subtitle: "Keep a folder identical on two devices.",
+    },
+    {
+        id: "clipboard",
+        label: "Clipboard",
+        title: "Clipboard",
+        subtitle: "Share copied text between connected devices.",
+    },
+    {
+        id: "protocol",
+        label: "Protocol",
+        title: "Protocol",
+        subtitle: "Every message exchanged with a peer, recorded and replayable.",
+    },
+    {
+        id: "analytics",
+        label: "Analytics",
+        title: "Analytics",
+        subtitle: "Throughput, latency and retries across saved transfers.",
+    },
+];
+
+const THEME_OPTIONS: Array<{ id: ThemePref; label: string }> = [
+    { id: "system", label: "System" },
+    { id: "light", label: "Light" },
+    { id: "dark", label: "Dark" },
+];
 const COLLAPSED_SECTIONS_KEY = "syncbridge.collapsedSections";
 
 function App() {
@@ -96,8 +160,85 @@ function App() {
     const [unlockTransferId, setUnlockTransferId] =
         useState<string | null>(null);
 
-    const [error, setError] =
+    const [toasts, setToasts] =
+        useState<Toast[]>([]);
+
+    const toastId = useRef(0);
+
+    const dismissToast = useCallback((id: number) => {
+        setToasts((current) =>
+            current.filter((toast) => toast.id !== id)
+        );
+    }, []);
+
+    const notify = useCallback(
+        (kind: ToastKind, message: string) => {
+            const id = ++toastId.current;
+
+            setToasts((current) =>
+                current.some((toast) => toast.message === message)
+                    ? current
+                    : [...current.slice(-3), { id, kind, message }]
+            );
+
+            setTimeout(
+                () => dismissToast(id),
+                kind === "error" ? 7000 : 4000
+            );
+        },
+        [dismissToast]
+    );
+
+    // Errors and notices from every handler surface as toasts.
+    const setError = useCallback(
+        (message: string | null) => {
+            if (message) {
+                notify("error", message);
+            }
+        },
+        [notify]
+    );
+
+    const setClipboardNotice = useCallback(
+        (message: string | null) => {
+            if (message) {
+                notify("info", message);
+            }
+        },
+        [notify]
+    );
+
+    const [view, setView] =
+        useState<ViewId>(() => {
+            try {
+                const saved = localStorage.getItem(VIEW_KEY);
+
+                return NAV.some((item) => item.id === saved)
+                    ? (saved as ViewId)
+                    : "devices";
+            } catch {
+                return "devices";
+            }
+        });
+
+    const [themePref, setThemePref] =
+        useState<ThemePref>(() => {
+            try {
+                const saved = localStorage.getItem(THEME_KEY);
+
+                return saved === "light" || saved === "dark"
+                    ? saved
+                    : "system";
+            } catch {
+                return "system";
+            }
+        });
+
+    const [selectedPeerId, setSelectedPeerId] =
         useState<string | null>(null);
+
+    const [zoneActive, setZoneActive] =
+        useState(false);
 
     const [connectingDeviceId, setConnectingDeviceId] =
         useState<string | null>(null);
@@ -156,9 +297,6 @@ function App() {
     const [clipboardBusy, setClipboardBusy] =
         useState(false);
 
-    const [clipboardNotice, setClipboardNotice] =
-        useState<string | null>(null);
-
     const [dragActive, setDragActive] =
         useState(false);
 
@@ -210,8 +348,6 @@ function App() {
         [syncEvents, transfers]
     );
 
-    const transfersCollapsed = collapsedSections.transfers === true;
-
     /*
      * dragenter/dragleave fire for every child element the cursor
      * crosses, so a plain boolean flickers. Counting enters and
@@ -255,17 +391,13 @@ function App() {
 
                 setApiOnline(true);
                 setError(null);
-            } catch (err) {
+            } catch {
+                // The sidebar shows the engine as offline; a toast
+                // every poll interval would only be noise.
                 setApiOnline(false);
-
-                setError(
-                    err instanceof Error
-                        ? err.message
-                        : "Unable to connect to API"
-                );
             }
         },
-        []
+        [setError]
     );
 
     useEffect(() => {
@@ -290,9 +422,16 @@ function App() {
                     setError(`Pairing failed: ${event.error}`);
                 }
 
+                if (event.type === "PAIRED") {
+                    notify(
+                        "success",
+                        `Paired with ${event.deviceName ?? "the device"}`
+                    );
+                }
+
                 void loadData();
             }),
-        [loadData]
+        [loadData, notify, setError]
     );
 
     useEffect(() =>
@@ -382,6 +521,30 @@ function App() {
 
     useEffect(() => {
         try {
+            localStorage.setItem(VIEW_KEY, view);
+        } catch {
+            // Blocked storage: the last view just isn't remembered.
+        }
+    }, [view]);
+
+    useEffect(() => {
+        const root = document.documentElement;
+
+        if (themePref === "system") {
+            root.removeAttribute("data-theme");
+        } else {
+            root.setAttribute("data-theme", themePref);
+        }
+
+        try {
+            localStorage.setItem(THEME_KEY, themePref);
+        } catch {
+            // Blocked storage: the theme just isn't remembered.
+        }
+    }, [themePref]);
+
+    useEffect(() => {
+        try {
             localStorage.setItem(
                 "syncbridge.explainMode",
                 explainMode ? "1" : "0"
@@ -439,18 +602,8 @@ function App() {
                     }
                 }
             ),
-        []
+        [setClipboardNotice]
     );
-
-    useEffect(() => {
-        if (!clipboardNotice) {
-            return;
-        }
-
-        const timer = setTimeout(() => setClipboardNotice(null), 4000);
-
-        return () => clearTimeout(timer);
-    }, [clipboardNotice]);
 
     const handleToggleClipboard = async () => {
         if (!clipboard) {
@@ -483,7 +636,7 @@ function App() {
 
             if (!window.electronAPI?.readClipboard) {
                 setError(
-                    "Clipboard access not available – preload script may not be loaded."
+                    "Clipboard access is not available. The preload script may not be loaded."
                 );
                 return;
             }
@@ -500,7 +653,7 @@ function App() {
             setClipboardNotice(
                 result.shared
                     ? `Shared with ${result.peers} peer(s)`
-                    : "Nothing new to share — peers already have this"
+                    : "Nothing new to share. Peers already have this."
             );
 
             setClipboard(await getClipboard());
@@ -598,7 +751,7 @@ function App() {
 
             // Guard against missing preload API
             if (!window.electronAPI?.selectFile) {
-                setError('File picker not available – preload script may not be loaded.');
+                setError('File picker not available. The preload script may not be loaded.');
                 return;
             }
 
@@ -652,6 +805,49 @@ function App() {
         }
     };
 
+    const runTransferAction = async (
+        action: (transferId: string) => Promise<unknown>,
+        transferId: string
+    ) => {
+        try {
+            await action(transferId);
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Transfer action failed"
+            );
+        }
+    };
+
+    /** "Send file" from the Transfers header: pick a file, then a device. */
+    const handleSendFromHeader = async () => {
+        const targets = Array.from(connectedDeviceIds);
+
+        if (targets.length === 0) {
+            setError("Connect to a device first.");
+            return;
+        }
+
+        if (!window.electronAPI?.selectFile) {
+            setError("File picker not available. The preload script may not be loaded.");
+            return;
+        }
+
+        const filePath = await window.electronAPI.selectFile();
+
+        if (!filePath) {
+            return;
+        }
+
+        if (targets.length === 1) {
+            setPendingSend({ deviceId: targets[0], paths: [filePath] });
+        } else {
+            setPendingDropPaths([filePath]);
+        }
+    };
+
     const handleSubmitPin = async (deviceId: string, pin: string) => {
         await submitPairingPin(deviceId, pin);
         await loadData();
@@ -685,6 +881,7 @@ function App() {
 
         await unlockTransfer(unlockTransferId, pin);
         setUnlockTransferId(null);
+        notify("success", "File unlocked and saved");
         await loadData();
     };
 
@@ -730,24 +927,26 @@ function App() {
         }
     };
 
-    const handleDrop = async (
-        event: ReactDragEvent<HTMLDivElement>
-    ) => {
-        event.preventDefault();
+    const endDrag = () => {
         dragDepth.current = 0;
         setDragActive(false);
+    };
 
+    /** Resolve dropped files to real paths; reports why if it can't. */
+    const resolveDroppedPaths = (
+        event: ReactDragEvent<HTMLElement>
+    ): string[] | null => {
         const files = Array.from(event.dataTransfer.files);
 
         if (files.length === 0) {
-            return;
+            return null;
         }
 
         if (!window.electronAPI?.getPathForFile) {
             setError(
-                "Drag and drop needs the desktop app – open SyncBridge in Electron."
+                "Drag and drop needs the desktop app. Open SyncBridge in Electron."
             );
-            return;
+            return null;
         }
 
         /*
@@ -766,8 +965,40 @@ function App() {
 
         if (paths.length === 0) {
             setError(
-                "Could not resolve the dropped item. Folders are not supported yet — drop files instead."
+                "Could not resolve the dropped item. Folders are not supported yet, so drop files instead."
             );
+            return null;
+        }
+
+        return paths;
+    };
+
+    /** Dropped straight onto one device's drop zone. */
+    const handleZoneDrop = (
+        event: ReactDragEvent<HTMLElement>,
+        deviceId: string
+    ) => {
+        event.preventDefault();
+        event.stopPropagation();
+        endDrag();
+        setZoneActive(false);
+
+        const paths = resolveDroppedPaths(event);
+
+        if (paths) {
+            setPendingSend({ deviceId, paths });
+        }
+    };
+
+    const handleDrop = (
+        event: ReactDragEvent<HTMLDivElement>
+    ) => {
+        event.preventDefault();
+        endDrag();
+
+        const paths = resolveDroppedPaths(event);
+
+        if (!paths) {
             return;
         }
 
@@ -793,7 +1024,7 @@ function App() {
         try {
             if (!window.electronAPI?.selectFolder) {
                 setError(
-                    "Folder picker not available – preload script may not be loaded."
+                    "Folder picker not available. The preload script may not be loaded."
                 );
                 return;
             }
@@ -884,600 +1115,523 @@ function App() {
         }
     };
 
-    return (
-        <div
-            className={`app ${dragActive ? "app-drag-active" : ""}`}
-            onDragEnter={handleDragEnter}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-        >
-            {dragActive && (
-                <div className="drop-overlay">
-                    <div className="drop-overlay-inner">
-                        <strong>Drop to send</strong>
-                        <p>
-                            {connectedDeviceIds.size === 0
-                                ? "No connected devices — connect to a peer first"
-                                : connectedDeviceIds.size === 1
-                                  ? "Sends to your connected peer"
-                                  : "You'll choose which peer to send to"}
-                        </p>
-                    </div>
-                </div>
-            )}
+    const activeView = NAV.find((item) => item.id === view) ?? NAV[0];
 
-            <header className="header">
-                <div>
-                    <h1>SyncBridge</h1>
+    const peerStatus = (deviceId: string): PeerStatus => {
+        if (connectedDeviceIds.has(deviceId)) {
+            return "connected";
+        }
 
-                    <p>
-                        Peer-to-peer file
-                        transfer
-                    </p>
-                </div>
+        const pairing =
+            pairingPrompts.some((prompt) => prompt.deviceId === deviceId) ||
+            connections.some(
+                (connection) =>
+                    connection.deviceId === deviceId &&
+                    (connection.state === "AWAITING_PIN" ||
+                        connection.state === "CONNECTING")
+            );
 
-                <div className="header-actions">
-                    <button
-                        className={`explain-toggle ${explainMode ? "on" : ""}`}
-                        onClick={() => setExplainMode((value) => !value)}
-                        title="Show plain-English explanations of each protocol step"
-                    >
-                        <span className="explain-toggle-dot" />
-                        Explain mode
-                    </button>
+        return pairing ? "pairing" : "discovered";
+    };
 
-                    <div
-                        className={`api-status ${
-                            apiOnline
-                                ? "online"
-                                : "offline"
-                        }`}
-                    >
-                        <span className="status-dot" />
+    const mapPeers: MapPeer[] = devices.map((peer) => ({
+        deviceId: peer.deviceId,
+        name: peer.deviceName,
+        status: peerStatus(peer.deviceId),
+    }));
 
-                        {apiOnline
-                            ? "API Online"
-                            : "API Offline"}
-                    </div>
-                </div>
-            </header>
+    const activePeer =
+        devices.find((peer) => peer.deviceId === selectedPeerId) ??
+        devices[0] ??
+        null;
 
-            {error && (
-                <div className="error-banner">
-                    {error}
-                </div>
-            )}
+    const activePeerStatus = activePeer
+        ? peerStatus(activePeer.deviceId)
+        : null;
 
-            {clipboardNotice && (
-                <div className="notice-banner">
-                    {clipboardNotice}
-                </div>
-            )}
+    const activePeerTrusted = activePeer
+        ? trustedDevices.some((entry) => entry.deviceId === activePeer.deviceId)
+        : false;
 
-            <main className="dashboard">
-                <section className="card device-card">
-                    <div className="card-header">
-                        <h2>My Device</h2>
+    const activePeerConnection = activePeer
+        ? connections.find((connection) => connection.deviceId === activePeer.deviceId)
+        : undefined;
 
-                        <span className="online-badge">
-                            ● ONLINE
+    const liveTransfers = transfers.filter(isLiveTransfer);
+    const finishedTransfers = transfers.filter((transfer) => !isLiveTransfer(transfer));
+
+    const navCount = (id: ViewId): string | undefined => {
+        switch (id) {
+            case "devices":
+                return connectedDeviceIds.size > 0
+                    ? `${connectedDeviceIds.size} online`
+                    : undefined;
+            case "transfers":
+                return liveTransfers.length > 0
+                    ? String(liveTransfers.length)
+                    : undefined;
+            case "sync":
+                return syncPairs.length > 0 ? String(syncPairs.length) : undefined;
+            default:
+                return undefined;
+        }
+    };
+
+    const renderTransferCard = (transfer: Transfer) => (
+        <TransferCard
+            key={transfer.transferId}
+            transfer={transfer}
+            peerName={deviceLabel(transfer.peerDeviceId)}
+            syncPairName={
+                transfer.syncPairId
+                    ? (syncPairs.find((pair) => pair.pairId === transfer.syncPairId)
+                          ?.name ?? "unknown pair")
+                    : undefined
+            }
+            onOpen={() => setSelectedTransferId(transfer.transferId)}
+            onPause={() => void runTransferAction(pauseTransfer, transfer.transferId)}
+            onResume={() => void runTransferAction(resumeTransfer, transfer.transferId)}
+            onCancel={() => void runTransferAction(cancelTransfer, transfer.transferId)}
+            onUnlock={() => setUnlockTransferId(transfer.transferId)}
+            onShowInFolder={window.electronAPI?.showInFolder}
+        />
+    );
+
+    const renderDevices = () => (
+        <>
+            <div className="devices-layout">
+                <section className="panel map-panel">
+                    <div className="panel-header">
+                        <h2>Nearby</h2>
+                        <span className="muted">
+                            {devices.length === 0
+                                ? "Searching"
+                                : `${devices.length} found`}
                         </span>
+                    </div>
+
+                    <NetworkMap
+                        selfName={device?.deviceName ?? "This device"}
+                        peers={mapPeers}
+                        selectedId={activePeer?.deviceId ?? null}
+                        onSelect={setSelectedPeerId}
+                    />
+
+                    <p className="map-hint">
+                        {devices.length === 0
+                            ? "Looking for other devices. Both machines need to be running SyncBridge on the same network."
+                            : "Select a device to connect or send files."}
+                    </p>
+                </section>
+
+                <aside className="panel inspector">
+                    {activePeer && activePeerStatus ? (
+                        <>
+                            <div className="inspector-head">
+                                <div>
+                                    <h2>{activePeer.deviceName}</h2>
+                                    <span className="muted">
+                                        {activePeer.ip} / {activePeer.platform}
+                                    </span>
+                                </div>
+
+                                <span className={`state-pill peer-${activePeerStatus}`}>
+                                    {activePeerStatus === "connected"
+                                        ? "Connected"
+                                        : activePeerStatus === "pairing"
+                                          ? "Pairing"
+                                          : "Available"}
+                                </span>
+                            </div>
+
+                            <dl className="facts">
+                                <div>
+                                    <dt>Trust</dt>
+                                    <dd>
+                                        {activePeerTrusted
+                                            ? "Paired. No PIN needed."
+                                            : "Not paired. A PIN is needed."}
+                                    </dd>
+                                </div>
+                                <div>
+                                    <dt>Device ID</dt>
+                                    <dd className="mono">
+                                        {activePeer.deviceId.slice(0, 8)}
+                                    </dd>
+                                </div>
+                                {activePeerConnection?.sessionId && (
+                                    <div>
+                                        <dt>Session</dt>
+                                        <dd className="mono">
+                                            {activePeerConnection.sessionId.slice(0, 8)}
+                                        </dd>
+                                    </div>
+                                )}
+                                {activePeerConnection?.connectedAt && (
+                                    <div>
+                                        <dt>Connected since</dt>
+                                        <dd>
+                                            {new Date(
+                                                activePeerConnection.connectedAt
+                                            ).toLocaleTimeString()}
+                                        </dd>
+                                    </div>
+                                )}
+                            </dl>
+
+                            {activePeerStatus === "connected" ? (
+                                <>
+                                    <div
+                                        className={`dropzone${zoneActive ? " active" : ""}`}
+                                        role="button"
+                                        tabIndex={0}
+                                        onClick={() => void handleSendFile(activePeer.deviceId)}
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                                event.preventDefault();
+                                                void handleSendFile(activePeer.deviceId);
+                                            }
+                                        }}
+                                        onDragEnter={(event) => {
+                                            if (event.dataTransfer.types.includes("Files")) {
+                                                setZoneActive(true);
+                                            }
+                                        }}
+                                        onDragOver={(event) => {
+                                            if (event.dataTransfer.types.includes("Files")) {
+                                                event.preventDefault();
+                                                event.dataTransfer.dropEffect = "copy";
+                                            }
+                                        }}
+                                        onDragLeave={() => setZoneActive(false)}
+                                        onDrop={(event) =>
+                                            handleZoneDrop(event, activePeer.deviceId)
+                                        }
+                                    >
+                                        <strong>
+                                            Drop files to send to {activePeer.deviceName}
+                                        </strong>
+                                        <span>or click to choose a file</span>
+                                    </div>
+
+                                    <div className="inspector-actions">
+                                        <button
+                                            className="btn btn-danger"
+                                            onClick={() => void handleDisconnect(activePeer.deviceId)}
+                                            disabled={disconnectingDeviceId === activePeer.deviceId}
+                                        >
+                                            {disconnectingDeviceId === activePeer.deviceId
+                                                ? "Disconnecting"
+                                                : "Disconnect"}
+                                        </button>
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="inspector-actions">
+                                    <button
+                                        className="btn btn-primary"
+                                        onClick={() => void handleConnect(activePeer.deviceId)}
+                                        disabled={
+                                            connectingDeviceId !== null ||
+                                            activePeerStatus === "pairing"
+                                        }
+                                    >
+                                        {connectingDeviceId === activePeer.deviceId ||
+                                        activePeerStatus === "pairing"
+                                            ? "Connecting"
+                                            : activePeerTrusted
+                                              ? "Connect"
+                                              : "Pair and connect"}
+                                    </button>
+                                </div>
+                            )}
+                        </>
+                    ) : (
+                        <div className="empty-state">
+                            <strong>No device selected</strong>
+                            <p>Devices that appear on your network will be listed here.</p>
+                        </div>
+                    )}
+                </aside>
+            </div>
+
+            <div className="grid-2">
+                <section className="panel">
+                    <div className="panel-header">
+                        <h2>This device</h2>
                     </div>
 
                     {device ? (
-                        <div className="device-details">
+                        <dl className="facts">
                             <div>
-                                <span className="label">
-                                    Device Name
-                                </span>
-
-                                <strong>
-                                    {
-                                        device.deviceName
-                                    }
-                                </strong>
+                                <dt>Name</dt>
+                                <dd>{device.deviceName}</dd>
                             </div>
-
                             <div>
-                                <span className="label">
-                                    Device ID
-                                </span>
-
-                                <strong className="mono">
-                                    {
-                                        device.deviceId
-                                    }
-                                </strong>
+                                <dt>Platform</dt>
+                                <dd>{device.platform}</dd>
                             </div>
-
                             <div>
-                                <span className="label">
-                                    Platform
-                                </span>
-
-                                <strong>
-                                    {
-                                        device.platform
-                                    }
-                                </strong>
+                                <dt>Device ID</dt>
+                                <dd className="mono wrap">{device.deviceId}</dd>
                             </div>
-                        </div>
+                        </dl>
                     ) : (
-                        <p className="empty">
-                            Loading device
-                            information...
+                        <div className="skeleton-stack" aria-busy="true">
+                            <div className="skeleton" />
+                            <div className="skeleton" />
+                            <div className="skeleton short" />
+                        </div>
+                    )}
+                </section>
+
+                <section className="panel">
+                    <div className="panel-header">
+                        <h2>Paired devices</h2>
+                        <span className="muted">{trustedDevices.length}</span>
+                    </div>
+
+                    <TrustedDevices
+                        devices={trustedDevices}
+                        onForget={handleForgetDevice}
+                    />
+                </section>
+            </div>
+        </>
+    );
+
+    const renderTransfers = () => (
+        <>
+            <section className="panel">
+                <div className="panel-header">
+                    <h2>In progress</h2>
+                    <span className="muted">{liveTransfers.length}</span>
+                </div>
+
+                {liveTransfers.length === 0 ? (
+                    <div className="empty-state compact">
+                        <strong>Nothing is transferring</strong>
+                        <p>
+                            Drop a file on a connected device in the Devices view,
+                            or choose Send file above.
                         </p>
-                    )}
-                </section>
+                    </div>
+                ) : (
+                    <div className="transfer-list">
+                        {liveTransfers.map(renderTransferCard)}
+                    </div>
+                )}
+            </section>
 
-                <section className="card">
-                    <div className="card-header">
-                        <h2>
-                            Discovered Devices
-                        </h2>
-
-                        <span className="count">
-                            {devices.length}
-                        </span>
+            {finishedTransfers.length > 0 && (
+                <section className="panel">
+                    <div className="panel-header">
+                        <h2>This session</h2>
+                        <span className="muted">{finishedTransfers.length}</span>
                     </div>
 
-                    {devices.length === 0 ? (
-                        <div className="empty-state">
-                            <div className="empty-icon">
-                                ◌
-                            </div>
-
-                            <strong>
-                                No devices
-                                discovered
-                            </strong>
-
-                            <p>
-                                SyncBridge is
-                                searching the
-                                local network.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="device-list">
-                            {devices.map(
-                                (peer) => {
-                                    const connected =
-                                        connectedDeviceIds.has(
-                                            peer.deviceId
-                                        );
-
-                                    const connecting =
-                                        connectingDeviceId ===
-                                        peer.deviceId;
-
-                                    const sending =
-                                        sendingDeviceId ===
-                                        peer.deviceId;
-
-                                    return (
-                                        <div
-                                            className="device-row"
-                                            key={
-                                                peer.deviceId
-                                            }
-                                        >
-                                            <div className="device-icon">
-                                                {peer.platform ===
-                                                "win32"
-                                                    ? "⊞"
-                                                    : "⌘"}
-                                            </div>
-
-                                            <div className="device-info">
-                                                <strong>
-                                                    {
-                                                        peer.deviceName
-                                                    }
-                                                </strong>
-
-                                                <span>
-                                                    {
-                                                        peer.ip
-                                                    }{" "}
-                                                    ·{" "}
-                                                    {
-                                                        peer.platform
-                                                    }
-                                                </span>
-                                            </div>
-
-                                            <div
-                                                className={
-                                                    connected
-                                                        ? "connection-badge connected"
-                                                        : "connection-badge"
-                                                }
-                                            >
-                                                {connected
-                                                    ? "CONNECTED"
-                                                    : "DISCOVERED"}
-                                            </div>
-
-                                            {!connected && (
-                                                <button
-                                                    className="connect-button"
-                                                    onClick={() =>
-                                                        handleConnect(
-                                                            peer.deviceId
-                                                        )
-                                                    }
-                                                    disabled={
-                                                        connecting ||
-                                                        connectingDeviceId !==
-                                                            null
-                                                    }
-                                                >
-                                                    {connecting
-                                                        ? "Connecting..."
-                                                        : "Connect"}
-                                                </button>
-                                            )}
-
-                                            {connected && (
-                                                <div style={{ display: "flex", gap: "8px" }}>
-                                                    <button
-                                                        className="connect-button"
-                                                        onClick={() =>
-                                                            handleSendFile(
-                                                                peer.deviceId
-                                                            )
-                                                        }
-                                                        disabled={
-                                                            sending
-                                                        }
-                                                    >
-                                                        {sending
-                                                            ? "Sending..."
-                                                            : "Send File"}
-                                                    </button>
-                                                    <button
-                                                        className="disconnect-button"
-                                                        onClick={() =>
-                                                            handleDisconnect(
-                                                                peer.deviceId
-                                                            )
-                                                        }
-                                                        disabled={
-                                                            disconnectingDeviceId ===
-                                                            peer.deviceId
-                                                        }
-                                                    >
-                                                        {disconnectingDeviceId ===
-                                                        peer.deviceId
-                                                            ? "Disconnecting..."
-                                                            : "Disconnect"}
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    );
-                                }
-                            )}
-                        </div>
-                    )}
-                </section>
-
-                <section className="card">
-                    <div className="card-header">
-                        <h2>Connections</h2>
-
-                        <span className="count">
-                            {
-                                connections.length
-                            }
-                        </span>
+                    <div className="transfer-list">
+                        {finishedTransfers.map(renderTransferCard)}
                     </div>
-
-                    {connections.length ===
-                    0 ? (
-                        <div className="empty-state compact">
-                            <strong>
-                                No active
-                                connections
-                            </strong>
-
-                            <p>
-                                Connected peers
-                                will appear
-                                here.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="connection-list">
-                            {connections.map(
-                                (
-                                    connection
-                                ) => (
-                                    <div
-                                        className="connection-row"
-                                        key={
-                                            connection.deviceId
-                                        }
-                                    >
-                                        <span className="status-dot connected-dot" />
-
-                                        <div>
-                                            <strong className="mono">
-                                                {connection.deviceName
-                                                    ? `${connection.deviceName} (${connection.deviceId.slice(0, 8)})`
-                                                    : connection.deviceId}
-                                            </strong>
-
-                                            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "2px" }}>
-                                                <span>
-                                                    {connection.remoteAddress
-                                                        ? `${connection.remoteAddress}:${connection.remotePort}`
-                                                        : "LAN"}
-                                                </span>
-                                                {connection.sessionId && (
-                                                    <span className="session-badge">
-                                                        Session: {connection.sessionId.slice(0, 8)}
-                                                    </span>
-                                                )}
-                                                {connection.connectedAt && (
-                                                    <span>
-                                                        · {new Date(connection.connectedAt).toLocaleTimeString()}
-                                                    </span>
-                                                )}
-                                            </div>
-                                            {connection.rejectReason && (
-                                                <div style={{ color: "#a83232", fontSize: "11px", fontWeight: 600, marginTop: "2px" }}>
-                                                    Error: {connection.rejectReason}
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                                            <span className="state">
-                                                {connection.state}
-                                            </span>
-                                            {connection.state === "CONNECTED" && (
-                                                <button
-                                                    className="disconnect-button"
-                                                    onClick={() =>
-                                                        handleDisconnect(
-                                                            connection.deviceId
-                                                        )
-                                                    }
-                                                    disabled={
-                                                        disconnectingDeviceId ===
-                                                        connection.deviceId
-                                                    }
-                                                >
-                                                    {disconnectingDeviceId ===
-                                                    connection.deviceId
-                                                        ? "..."
-                                                        : "Disconnect"}
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                )
-                            )}
-                        </div>
-                    )}
                 </section>
+            )}
 
-                <section className="card">
-                    <div className="card-header">
-                        <h2>Folder Sync</h2>
+            <TransferHistory explainMode={explainMode} refreshKey={historyVersion} />
+        </>
+    );
 
-                        <span className="count">
-                            {syncPairs.length}
-                        </span>
+    const renderSync = () => (
+        <>
+            <section className="panel">
+                <div className="panel-header">
+                    <h2>Synced folders</h2>
+                    <span className="muted">{syncPairs.length}</span>
+                </div>
+
+                {syncPairs.length === 0 ? (
+                    <div className="empty-state compact">
+                        <strong>No synced folders yet</strong>
+                        <p>
+                            Choose a local folder and a connected device below. Changes
+                            on either side are copied to the other.
+                        </p>
                     </div>
+                ) : (
+                    <div className="sync-pair-list">
+                        {syncPairs.map((pair) => {
+                            const files = syncActivityByPair.get(pair.pairId) ?? [];
 
-                    {syncPairs.length === 0 ? (
-                        <div className="empty-state compact">
-                            <strong>No synced folders</strong>
+                            const activeCount = files.filter(
+                                (file) =>
+                                    file.status === "transferring" ||
+                                    file.status === "queued"
+                            ).length;
 
-                            <p>
-                                Pair a local folder with a connected device to keep them in sync.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="sync-pair-list">
-                            {syncPairs.map((pair) => {
-                                const files =
-                                    syncActivityByPair.get(pair.pairId) ?? [];
+                            const filesKey = `sync:${pair.pairId}`;
+                            const filesCollapsed = collapsedSections[filesKey] === true;
 
-                                const activeCount = files.filter(
-                                    (file) =>
-                                        file.status === "transferring" ||
-                                        file.status === "queued"
-                                ).length;
-
-                                const filesKey = `sync:${pair.pairId}`;
-                                const filesCollapsed =
-                                    collapsedSections[filesKey] === true;
-
-                                return (
+                            return (
                                 <div className="sync-pair-card" key={pair.pairId}>
-                                <div className="sync-pair-row">
-                                    <div className="sync-pair-info">
-                                        <strong>{pair.name}</strong>
+                                    <div className="sync-pair-row">
+                                        <div className="sync-pair-info">
+                                            <strong>{pair.name}</strong>
+                                            <span className="mono small">{pair.localFolder}</span>
+                                            <span className="muted">
+                                                With {deviceLabel(pair.peerDeviceId)}
+                                                {pair.lastSyncAt &&
+                                                    ` · last synced ${new Date(pair.lastSyncAt).toLocaleTimeString()}`}
+                                            </span>
+                                        </div>
 
-                                        <span className="mono" style={{ fontSize: "11px" }}>
-                                            {pair.localFolder}
-                                        </span>
+                                        <div className="row-actions">
+                                            <span className="state-pill">{pair.status}</span>
 
-                                        <span>
-                                            Peer {pair.peerDeviceId.slice(0, 8)}
-                                            {pair.lastSyncAt &&
-                                                ` · Last synced ${new Date(pair.lastSyncAt).toLocaleTimeString()}`}
-                                        </span>
+                                            <button
+                                                className="btn btn-sm"
+                                                disabled={syncingPairId === pair.pairId}
+                                                onClick={() => void handleSyncNow(pair.pairId)}
+                                            >
+                                                {syncingPairId === pair.pairId ? "Syncing" : "Sync now"}
+                                            </button>
+
+                                            <button
+                                                className="btn btn-sm btn-danger"
+                                                disabled={removingPairId === pair.pairId}
+                                                onClick={() => void handleRemoveSyncPair(pair.pairId)}
+                                            >
+                                                {removingPairId === pair.pairId ? "Removing" : "Unpair"}
+                                            </button>
+                                        </div>
                                     </div>
 
-                                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                        <span className="state">{pair.status}</span>
-
+                                    <div className="sync-files">
                                         <button
-                                            className="connect-button"
-                                            disabled={syncingPairId === pair.pairId}
-                                            onClick={() => handleSyncNow(pair.pairId)}
+                                            type="button"
+                                            className="btn btn-ghost btn-sm"
+                                            aria-expanded={!filesCollapsed}
+                                            onClick={() => toggleSection(filesKey)}
                                         >
-                                            {syncingPairId === pair.pairId ? "Syncing..." : "Sync Now"}
-                                        </button>
-
-                                        <button
-                                            className="disconnect-button"
-                                            disabled={removingPairId === pair.pairId}
-                                            onClick={() => handleRemoveSyncPair(pair.pairId)}
-                                        >
-                                            {removingPairId === pair.pairId ? "..." : "Unpair"}
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div className="sync-files">
-                                    <button
-                                        type="button"
-                                        className="section-toggle sync-files-toggle"
-                                        aria-expanded={!filesCollapsed}
-                                        onClick={() => toggleSection(filesKey)}
-                                    >
-                                        <span
-                                            className={`chevron${
-                                                filesCollapsed ? " collapsed" : ""
-                                            }`}
-                                            aria-hidden="true"
-                                        >
-                                            ▾
-                                        </span>
-
-                                        <span>
+                                            {filesCollapsed ? "Show" : "Hide"}{" "}
                                             {files.length === 0
-                                                ? "No file activity yet"
-                                                : `${files.length} file${
-                                                      files.length === 1 ? "" : "s"
-                                                  }`}
-                                            {activeCount > 0 &&
-                                                ` · ${activeCount} in progress`}
-                                        </span>
-                                    </button>
+                                                ? "activity"
+                                                : `${files.length} file${files.length === 1 ? "" : "s"}`}
+                                            {activeCount > 0 && ` (${activeCount} in progress)`}
+                                        </button>
 
-                                    {!filesCollapsed && files.length === 0 && (
-                                        <p className="sync-files-empty">
-                                            Files appear here as they are scanned,
-                                            sent, and received. The folder is
-                                            rescanned every 5 seconds.
-                                        </p>
-                                    )}
+                                        {!filesCollapsed && files.length === 0 && (
+                                            <p className="sync-files-empty">
+                                                Files appear here as they are scanned, sent and
+                                                received. The folder is rescanned every 5 seconds.
+                                            </p>
+                                        )}
 
-                                    {!filesCollapsed && files.length > 0 && (
-                                        <ul className="sync-file-list">
-                                            {files.map((file) => {
-                                                const percent =
-                                                    file.fileSize &&
-                                                    file.fileSize > 0 &&
-                                                    file.bytesTransferred !== undefined
-                                                        ? Math.min(
-                                                              100,
-                                                              Math.round(
-                                                                  (file.bytesTransferred /
-                                                                      file.fileSize) *
-                                                                      100
+                                        {!filesCollapsed && files.length > 0 && (
+                                            <ul className="sync-file-list">
+                                                {files.map((file) => {
+                                                    const percent =
+                                                        file.fileSize &&
+                                                        file.fileSize > 0 &&
+                                                        file.bytesTransferred !== undefined
+                                                            ? Math.min(
+                                                                  100,
+                                                                  Math.round(
+                                                                      (file.bytesTransferred /
+                                                                          file.fileSize) *
+                                                                          100
+                                                                  )
                                                               )
-                                                          )
-                                                        : undefined;
+                                                            : undefined;
 
-                                                return (
-                                                    <li
-                                                        className="sync-file-row"
-                                                        key={file.relativePath}
-                                                    >
-                                                        <span className="sync-file-arrow">
-                                                            {file.direction === "received"
-                                                                ? "↓"
-                                                                : file.direction === "sent"
-                                                                  ? "↑"
-                                                                  : "•"}
-                                                        </span>
-
-                                                        <div className="sync-file-main">
-                                                            <span
-                                                                className="sync-file-path mono"
-                                                                title={file.relativePath}
-                                                            >
-                                                                {file.relativePath}
+                                                    return (
+                                                        <li className="sync-file-row" key={file.relativePath}>
+                                                            <span className="direction-label">
+                                                                {file.direction === "received"
+                                                                    ? "In"
+                                                                    : file.direction === "sent"
+                                                                      ? "Out"
+                                                                      : "Scan"}
                                                             </span>
 
-                                                            <span className="sync-file-meta">
-                                                                {file.fileSize !== undefined &&
-                                                                    formatBytes(file.fileSize)}
+                                                            <div className="sync-file-main">
+                                                                <span
+                                                                    className="sync-file-path mono"
+                                                                    title={file.relativePath}
+                                                                >
+                                                                    {file.relativePath}
+                                                                </span>
+
+                                                                <span className="sync-file-meta">
+                                                                    {file.fileSize !== undefined &&
+                                                                        formatBytes(file.fileSize)}
+                                                                    {file.status === "transferring" &&
+                                                                        percent !== undefined &&
+                                                                        ` · ${percent}% · ${file.chunksAcked ?? 0}/${file.totalChunks ?? 0} chunks`}
+                                                                    {file.timestamp > 0 &&
+                                                                        ` · ${new Date(file.timestamp).toLocaleTimeString()}`}
+                                                                </span>
 
                                                                 {file.status === "transferring" &&
-                                                                    percent !== undefined &&
-                                                                    ` · ${percent}% · ${
-                                                                        file.chunksAcked ?? 0
-                                                                    }/${
-                                                                        file.totalChunks ?? 0
-                                                                    } chunks`}
+                                                                    percent !== undefined && (
+                                                                        <div className="progress thin">
+                                                                            <div
+                                                                                className="progress-fill active"
+                                                                                style={{ width: `${percent}%` }}
+                                                                            />
+                                                                        </div>
+                                                                    )}
+                                                            </div>
 
-                                                                {file.timestamp > 0 &&
-                                                                    ` · ${new Date(
-                                                                        file.timestamp
-                                                                    ).toLocaleTimeString()}`}
+                                                            <span
+                                                                className={`sync-file-status status-${file.status}`}
+                                                            >
+                                                                {SYNC_STATUS_LABEL[file.status]}
                                                             </span>
-
-                                                            {file.status === "transferring" &&
-                                                                percent !== undefined && (
-                                                                    <div className="sync-file-bar">
-                                                                        <div
-                                                                            className="sync-file-bar-fill"
-                                                                            style={{
-                                                                                width: `${percent}%`,
-                                                                            }}
-                                                                        />
-                                                                    </div>
-                                                                )}
-                                                        </div>
-
-                                                        <span
-                                                            className={`sync-file-status status-${file.status}`}
-                                                        >
-                                                            {SYNC_STATUS_LABEL[file.status]}
-                                                        </span>
-                                                    </li>
-                                                );
-                                            })}
-                                        </ul>
-                                    )}
+                                                        </li>
+                                                    );
+                                                })}
+                                            </ul>
+                                        )}
+                                    </div>
                                 </div>
-                                </div>
-                                );
-                            })}
-                        </div>
-                    )}
+                            );
+                        })}
+                    </div>
+                )}
+            </section>
 
-                    <div className="sync-pair-form">
-                        <button className="connect-button" onClick={handlePickSyncFolder}>
-                            {syncFolder ? "Change Folder" : "Choose Folder"}
-                        </button>
+            <section className="panel">
+                <div className="panel-header">
+                    <h2>New sync pair</h2>
+                </div>
 
-                        {syncFolder && (
-                            <span className="mono" style={{ fontSize: "11px" }}>
-                                {syncFolder}
+                <div className="sync-form">
+                    <label className="field">
+                        <span>Folder</span>
+                        <div className="field-row">
+                            <button className="btn" onClick={() => void handlePickSyncFolder()}>
+                                {syncFolder ? "Change" : "Choose folder"}
+                            </button>
+                            <span className="mono small truncate">
+                                {syncFolder ?? "No folder chosen"}
                             </span>
-                        )}
+                        </div>
+                    </label>
 
+                    <label className="field">
+                        <span>Name</span>
                         <input
-                            className="sync-name-input"
+                            className="input"
                             type="text"
-                            placeholder="Pair name (e.g. Documents)"
+                            placeholder="Documents"
                             value={syncName}
                             onChange={(event) => setSyncName(event.target.value)}
                         />
+                    </label>
 
+                    <label className="field">
+                        <span>Device</span>
                         <select
-                            className="sync-peer-select"
+                            className="input"
                             value={syncPeerId}
                             onChange={(event) => setSyncPeerId(event.target.value)}
                         >
@@ -1491,395 +1645,286 @@ function App() {
                                     </option>
                                 ))}
                         </select>
+                    </label>
 
+                    <div className="form-actions">
                         <button
-                            className="connect-button"
+                            className="btn btn-primary"
                             disabled={creatingSyncPair}
-                            onClick={handleCreateSyncPair}
+                            onClick={() => void handleCreateSyncPair()}
                         >
-                            {creatingSyncPair ? "Creating..." : "Create Sync Pair"}
+                            {creatingSyncPair ? "Creating" : "Create sync pair"}
                         </button>
                     </div>
-                </section>
+                </div>
+            </section>
+        </>
+    );
 
-                <section className="card">
-                    <div className="card-header">
-                        <h2>Connection Activity</h2>
+    const renderClipboard = () => (
+        <section className="panel">
+            <div className="panel-header">
+                <h2>Shared clipboard</h2>
 
-                        <span className="count">
-                            {protocolEvents.length}
-                        </span>
-                    </div>
+                <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(clipboard?.enabled)}
+                    aria-label="Clipboard sharing"
+                    className={`switch${clipboard?.enabled ? " on" : ""}`}
+                    disabled={!clipboard || clipboardBusy}
+                    onClick={() => void handleToggleClipboard()}
+                >
+                    <span className="switch-knob" />
+                </button>
+            </div>
 
-                    {protocolEvents.length === 0 ? (
-                        <div className="empty-state compact">
-                            <strong>No activity yet</strong>
+            <p className="panel-lede">
+                Text you copy is shared with every connected device, and anything
+                they copy lands on your clipboard.
+            </p>
 
-                            <p>
-                                Discovery and connection events will appear here live.
-                            </p>
+            <div className="form-actions start">
+                <button
+                    className="btn btn-primary"
+                    disabled={clipboardBusy || !clipboard?.enabled}
+                    onClick={() => void handleShareClipboardNow()}
+                >
+                    Share clipboard now
+                </button>
+            </div>
+
+            {!clipboard || clipboard.history.length === 0 ? (
+                <div className="empty-state compact">
+                    <strong>Nothing shared yet</strong>
+                    <p>Copy some text on either device and it will show up here.</p>
+                </div>
+            ) : (
+                <div className="clipboard-list">
+                    {clipboard.history.slice(0, 8).map((entry) => (
+                        <div className="list-row" key={entry.clipboardId}>
+                            <span className="direction-label">
+                                {entry.direction === "received" ? "In" : "Out"}
+                            </span>
+
+                            <div className="list-row-main">
+                                <span className="clipboard-preview">
+                                    {entry.content.length > 140
+                                        ? `${entry.content.slice(0, 140)}...`
+                                        : entry.content}
+                                </span>
+
+                                <span className="muted small">
+                                    {entry.direction === "received"
+                                        ? `From ${deviceLabel(entry.origin)}`
+                                        : "Shared by you"}
+                                    {" · "}
+                                    {formatBytes(entry.length)}
+                                    {" · "}
+                                    {new Date(entry.timestamp).toLocaleTimeString()}
+                                </span>
+                            </div>
+
+                            <button
+                                className="btn btn-sm"
+                                onClick={() => void handleCopyEntry(entry.content)}
+                            >
+                                Copy
+                            </button>
                         </div>
-                    ) : (
-                        <div className="event-list">
-                            {protocolEvents.map((event) => (
-                                <div className="event-row" key={event.id}>
-                                    <time>
-                                        {new Date(event.timestamp).toLocaleTimeString()}
-                                    </time>
-                                    <strong>{event.type}</strong>
-                                    <span>
-                                        {event.detail || event.deviceId || event.layer}
+                    ))}
+                </div>
+            )}
+        </section>
+    );
+
+    const renderProtocol = () => (
+        <>
+            <section className="panel">
+                <div className="panel-header">
+                    <h2>Recorded sessions</h2>
+                    <span className="muted">{sessions.length}</span>
+                </div>
+
+                {sessions.length === 0 ? (
+                    <div className="empty-state compact">
+                        <strong>No sessions yet</strong>
+                        <p>
+                            Connect to a device and every message of the session is
+                            recorded here for replay.
+                        </p>
+                    </div>
+                ) : (
+                    <div className="session-list">
+                        {sessions.map((session) => (
+                            <button
+                                type="button"
+                                className="list-row clickable"
+                                key={session.sessionId}
+                                onClick={() => setOpenSessionId(session.sessionId)}
+                            >
+                                <div className="list-row-main">
+                                    <strong>{deviceLabel(session.peerDeviceId)}</strong>
+                                    <span className="muted small">
+                                        {new Date(session.startedAt).toLocaleString()}
+                                        {session.endedAt
+                                            ? ` to ${new Date(session.endedAt).toLocaleTimeString()}`
+                                            : ", ongoing"}
                                     </span>
                                 </div>
-                            ))}
-                        </div>
-                    )}
-                </section>
 
-                <section className="card">
-                    <div className="card-header">
-                        <h2>Protocol Timeline</h2>
-
-                        <span className="count">
-                            {sessions.length}
-                        </span>
-                    </div>
-
-                    {sessions.length === 0 ? (
-                        <div className="empty-state compact">
-                            <strong>No sessions yet</strong>
-
-                            <p>
-                                Connect to a device to start recording a replayable session.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="session-list">
-                            {sessions.map((session) => {
-                                const peerLabel =
-                                    connections.find((c) => c.deviceId === session.peerDeviceId)
-                                        ?.deviceName ??
-                                    devices.find((d) => d.deviceId === session.peerDeviceId)
-                                        ?.deviceName ??
-                                    session.peerDeviceId.slice(0, 8);
-
-                                return (
-                                    <div
-                                        className="session-row"
-                                        key={session.sessionId}
-                                        onClick={() => setOpenSessionId(session.sessionId)}
-                                    >
-                                        <div className="sync-pair-info">
-                                            <strong>{peerLabel}</strong>
-                                            <span>
-                                                {new Date(session.startedAt).toLocaleString()}
-                                                {session.endedAt
-                                                    ? ` – ${new Date(session.endedAt).toLocaleTimeString()}`
-                                                    : " – ongoing"}
-                                            </span>
-                                        </div>
-
-                                        <span
-                                            className={`session-status-badge session-status-${session.status}`}
-                                        >
-                                            {session.status}
-                                        </span>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    )}
-                </section>
-
-                <section className="card">
-                    <div className="card-header">
-                        <h2>Shared Clipboard</h2>
-
-                        <button
-                            className={`clipboard-switch ${
-                                clipboard?.enabled ? "on" : "off"
-                            }`}
-                            disabled={!clipboard || clipboardBusy}
-                            onClick={handleToggleClipboard}
-                        >
-                            {clipboard?.enabled ? "On" : "Off"}
-                        </button>
-                    </div>
-
-                    <p className="card-hint">
-                        Text you copy is shared with every connected peer, and
-                        anything a peer copies lands on your clipboard.
-                    </p>
-
-                    <div className="clipboard-actions">
-                        <button
-                            className="connect-button"
-                            disabled={clipboardBusy || !clipboard?.enabled}
-                            onClick={handleShareClipboardNow}
-                        >
-                            Share clipboard now
-                        </button>
-                    </div>
-
-                    {!clipboard || clipboard.history.length === 0 ? (
-                        <div className="empty-state compact">
-                            <strong>Nothing shared yet</strong>
-                            <p>
-                                Copy some text on either device to see it
-                                appear here.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="clipboard-list">
-                            {clipboard.history.slice(0, 5).map((entry) => (
-                                <div
-                                    className="clipboard-row"
-                                    key={entry.clipboardId}
+                                <span
+                                    className={`state-pill session-${session.status}`}
                                 >
-                                    <div className="file-icon">
-                                        {entry.direction === "received"
-                                            ? "↓"
-                                            : "↑"}
-                                    </div>
+                                    {session.status}
+                                </span>
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </section>
 
-                                    <div className="clipboard-info">
-                                        <span className="clipboard-preview">
-                                            {entry.content.length > 140
-                                                ? `${entry.content.slice(0, 140)}…`
-                                                : entry.content}
-                                        </span>
+            <section className="panel">
+                <div className="panel-header">
+                    <h2>Live activity</h2>
+                    <span className="muted">Latest {protocolEvents.length}</span>
+                </div>
 
-                                        <span className="clipboard-meta">
-                                            {entry.direction === "received"
-                                                ? `From ${entry.origin.slice(0, 8)}`
-                                                : "Shared by you"}
-                                            {" · "}
-                                            {formatBytes(entry.length)}
-                                            {" · "}
-                                            {new Date(
-                                                entry.timestamp
-                                            ).toLocaleTimeString()}
-                                        </span>
-                                    </div>
+                {protocolEvents.length === 0 ? (
+                    <div className="empty-state compact">
+                        <strong>No activity yet</strong>
+                        <p>Discovery and connection events appear here as they happen.</p>
+                    </div>
+                ) : (
+                    <div className="event-list">
+                        {protocolEvents.map((event) => (
+                            <div className="event-row" key={event.id}>
+                                <time>{new Date(event.timestamp).toLocaleTimeString()}</time>
+                                <strong>{event.type}</strong>
+                                <span>{event.detail || event.deviceId || event.layer}</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </section>
+        </>
+    );
 
-                                    <button
-                                        className="connect-button"
-                                        onClick={() =>
-                                            handleCopyEntry(entry.content)
-                                        }
-                                    >
-                                        Copy
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </section>
+    return (
+        <div
+            className={`shell${dragActive ? " drag-active" : ""}`}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+        >
+            <aside className="sidebar">
+                <div className="brand">
+                    <strong>SyncBridge</strong>
+                    <span title={device?.deviceName}>
+                        {device?.deviceName ?? "Starting"}
+                    </span>
+                </div>
 
-                <section className="card">
-                    <div className="card-header">
+                <nav className="nav" aria-label="Sections">
+                    {NAV.map((item) => {
+                        const count = navCount(item.id);
+
+                        return (
+                            <button
+                                key={item.id}
+                                type="button"
+                                className={`nav-item${view === item.id ? " active" : ""}`}
+                                aria-current={view === item.id ? "page" : undefined}
+                                onClick={() => setView(item.id)}
+                            >
+                                <span>{item.label}</span>
+                                {count && <span className="nav-count">{count}</span>}
+                            </button>
+                        );
+                    })}
+                </nav>
+
+                <div className="sidebar-foot">
+                    <div className={`engine-status ${apiOnline ? "online" : "offline"}`}>
+                        <span className="dot" />
+                        {apiOnline ? "Engine running" : "Engine offline"}
+                    </div>
+
+                    <div className="foot-row">
+                        <span>Explain mode</span>
                         <button
                             type="button"
-                            className="section-toggle"
-                            aria-expanded={collapsedSections.paired !== true}
-                            onClick={() => toggleSection("paired")}
+                            role="switch"
+                            aria-checked={explainMode}
+                            aria-label="Explain mode"
+                            className={`switch${explainMode ? " on" : ""}`}
+                            onClick={() => setExplainMode((value) => !value)}
                         >
-                            <span
-                                className={`chevron${
-                                    collapsedSections.paired === true
-                                        ? " collapsed"
-                                        : ""
-                                }`}
-                                aria-hidden="true"
-                            >
-                                ▾
-                            </span>
-
-                            <h2>Paired devices</h2>
+                            <span className="switch-knob" />
                         </button>
-
-                        <span className="count">
-                            {trustedDevices.length}
-                        </span>
                     </div>
 
-                    {collapsedSections.paired === true ? null : (
-                        <TrustedDevices
-                            devices={trustedDevices}
-                            onForget={handleForgetDevice}
+                    <div className="segmented" role="group" aria-label="Theme">
+                        {THEME_OPTIONS.map((option) => (
+                            <button
+                                key={option.id}
+                                type="button"
+                                className={themePref === option.id ? "on" : ""}
+                                aria-pressed={themePref === option.id}
+                                onClick={() => setThemePref(option.id)}
+                            >
+                                {option.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            </aside>
+
+            <div className="content">
+                <header className="page-header">
+                    <div>
+                        <h1>{activeView.title}</h1>
+                        <p>{activeView.subtitle}</p>
+                    </div>
+
+                    {view === "transfers" && (
+                        <button
+                            className="btn btn-primary"
+                            onClick={() => void handleSendFromHeader()}
+                        >
+                            Send file
+                        </button>
+                    )}
+                </header>
+
+                <main className="page" key={view}>
+                    {view === "devices" && renderDevices()}
+                    {view === "transfers" && renderTransfers()}
+                    {view === "sync" && renderSync()}
+                    {view === "clipboard" && renderClipboard()}
+                    {view === "protocol" && renderProtocol()}
+                    {view === "analytics" && (
+                        <AnalyticsDashboard
+                            explainMode={explainMode}
+                            refreshKey={historyVersion}
                         />
                     )}
-                </section>
+                </main>
+            </div>
 
-                <section className="card">
-                    <div className="card-header">
-                        <button
-                            type="button"
-                            className="section-toggle"
-                            aria-expanded={!transfersCollapsed}
-                            onClick={() => toggleSection("transfers")}
-                        >
-                            <span
-                                className={`chevron${
-                                    transfersCollapsed ? " collapsed" : ""
-                                }`}
-                                aria-hidden="true"
-                            >
-                                ▾
-                            </span>
-
-                            <h2>Transfers</h2>
-                        </button>
-
-                        <span className="count">
-                            {transfers.length}
-                        </span>
-                    </div>
-
-                    {transfersCollapsed ? null : transfers.length ===
-                    0 ? (
-                        <div className="empty-state compact">
-                            <strong>
-                                No active
-                                transfers
-                            </strong>
-
-                            <p>
-                                File transfers
-                                will appear
-                                here.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="transfer-list">
-                            {transfers.map(
-                                (transfer) => (
-                                    <div
-                                        className="transfer-row transfer-row-clickable"
-                                        key={
-                                            transfer.transferId
-                                        }
-                                        onClick={() =>
-                                            setSelectedTransferId(
-                                                transfer.transferId
-                                            )
-                                        }
-                                    >
-                                        <div className="file-icon">
-                                            {transfer.direction === "received" ? "↓" : "↑"}
-                                        </div>
-
-                                        <div className="transfer-info">
-                                            <strong>
-                                                {transfer.sensitive &&
-                                                transfer.direction === "sent"
-                                                    ? transfer.originalFileName ??
-                                                      transfer.fileName
-                                                    : transfer.sensitive &&
-                                                        transfer.locked
-                                                      ? "Sensitive file"
-                                                      : transfer.fileName}
-
-                                                {transfer.sensitive && (
-                                                    <span className="sensitive-badge">
-                                                        {transfer.locked
-                                                            ? "🔒 Locked"
-                                                            : "🔒 Sensitive"}
-                                                    </span>
-                                                )}
-
-                                                {transfer.syncPairId && (
-                                                    <span className="session-badge" style={{ marginLeft: "8px" }}>
-                                                        Synced:{" "}
-                                                        {syncPairs.find(
-                                                            (pair) => pair.pairId === transfer.syncPairId
-                                                        )?.name ?? "unknown pair"}
-                                                    </span>
-                                                )}
-                                            </strong>
-
-                                            <span>
-                                                {transfer.direction === "received" ? "Received" : "Sent"}
-                                                {" · "}
-                                                {formatBytes(
-                                                    transfer.fileSize
-                                                )}{" "}
-                                                ·{" "}
-                                                {
-                                                    transfer.totalChunks
-                                                }{" "}
-                                                chunks
-                                            </span>
-
-                                            {transfer.savedPath && (
-                                                <span className="mono" style={{ fontSize: "11px" }}>
-                                                    {transfer.savedPath}
-                                                </span>
-                                            )}
-                                        </div>
-
-                                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                            <span className="state">
-                                                {
-                                                    transfer.state
-                                                }
-                                            </span>
-
-                                            {transfer.direction === "received" &&
-                                                transfer.state === "COMPLETED" &&
-                                                transfer.locked && (
-                                                    <button
-                                                        className="connect-button"
-                                                        onClick={(event) => {
-                                                            event.stopPropagation();
-                                                            setUnlockTransferId(
-                                                                transfer.transferId
-                                                            );
-                                                        }}
-                                                    >
-                                                        Unlock
-                                                    </button>
-                                                )}
-
-                                            {transfer.direction === "received" &&
-                                                transfer.state === "COMPLETED" &&
-                                                transfer.savedPath &&
-                                                !transfer.locked &&
-                                                window.electronAPI?.showInFolder && (
-                                                    <button
-                                                        className="connect-button"
-                                                        onClick={(event) => {
-                                                            event.stopPropagation();
-                                                            window.electronAPI.showInFolder(
-                                                                transfer.savedPath!
-                                                            );
-                                                        }}
-                                                    >
-                                                        Show in Folder
-                                                    </button>
-                                                )}
-                                        </div>
-                                    </div>
-                                )
-                            )}
-                        </div>
-                    )}
-                </section>
-
-                <TransferHistory
-                    collapsed={collapsedSections.history === true}
-                    onToggle={() => toggleSection("history")}
-                    explainMode={explainMode}
-                    refreshKey={historyVersion}
-                />
-
-                <AnalyticsDashboard
-                    collapsed={collapsedSections.analytics === true}
-                    onToggle={() => toggleSection("analytics")}
-                    explainMode={explainMode}
-                    refreshKey={historyVersion}
-                />
-            </main>
+            {dragActive && (
+                <div className="drop-banner" aria-hidden="true">
+                    <strong>Drop to send</strong>
+                    <span>
+                        {connectedDeviceIds.size === 0
+                            ? "Connect to a device first"
+                            : connectedDeviceIds.size === 1
+                              ? "Goes to your connected device"
+                              : "You will choose which device"}
+                    </span>
+                </div>
+            )}
 
             {selectedTransferId && (() => {
                 const selectedTransfer = transfers.find(
@@ -1908,17 +1953,10 @@ function App() {
                     return null;
                 }
 
-                const peerLabel =
-                    connections.find((c) => c.deviceId === session.peerDeviceId)
-                        ?.deviceName ??
-                    devices.find((d) => d.deviceId === session.peerDeviceId)
-                        ?.deviceName ??
-                    session.peerDeviceId.slice(0, 8);
-
                 return (
                     <SessionReplay
                         sessionId={openSessionId}
-                        peerLabel={peerLabel}
+                        peerLabel={deviceLabel(session.peerDeviceId)}
                         explainMode={explainMode}
                         onClose={() => setOpenSessionId(null)}
                     />
@@ -1960,107 +1998,65 @@ function App() {
 
             {pendingDropPaths && (
                 <div
-                    className="visualizer-overlay"
+                    className="modal-overlay"
                     onClick={() => setPendingDropPaths(null)}
                 >
                     <div
-                        className="visualizer-panel drop-chooser"
+                        className="modal modal-narrow"
+                        role="dialog"
+                        aria-modal="true"
                         onClick={(event) => event.stopPropagation()}
                     >
-                        <div className="visualizer-header">
+                        <div className="modal-header">
                             <div>
                                 <strong>
                                     Send {pendingDropPaths.length} file
                                     {pendingDropPaths.length === 1 ? "" : "s"}
                                 </strong>
-                                <span className="visualizer-subtitle">
+                                <span className="modal-subtitle">
                                     Choose a connected device
                                 </span>
                             </div>
 
                             <button
-                                className="visualizer-close"
+                                className="btn btn-ghost btn-sm"
                                 onClick={() => setPendingDropPaths(null)}
                             >
-                                ✕
+                                Cancel
                             </button>
                         </div>
 
-                        <div className="device-list">
-                            {Array.from(connectedDeviceIds).map((deviceId) => {
-                                const label =
-                                    connections.find(
-                                        (connection) =>
-                                            connection.deviceId === deviceId
-                                    )?.deviceName ??
-                                    devices.find(
-                                        (candidate) =>
-                                            candidate.deviceId === deviceId
-                                    )?.deviceName ??
-                                    deviceId.slice(0, 8);
-
-                                return (
-                                    <div className="device-row" key={deviceId}>
-                                        <div className="transfer-info">
-                                            <strong>{label}</strong>
-                                            <span className="mono">
-                                                {deviceId.slice(0, 8)}
-                                            </span>
-                                        </div>
-
-                                        <button
-                                            className="connect-button"
-                                            disabled={
-                                                sendingDeviceId !== null
-                                            }
-                                            onClick={() => {
-                                                setPendingSend({
-                                                    deviceId,
-                                                    paths: pendingDropPaths,
-                                                });
-                                                setPendingDropPaths(null);
-                                            }}
-                                        >
-                                            Send
-                                        </button>
+                        <div className="chooser">
+                            {Array.from(connectedDeviceIds).map((deviceId) => (
+                                <button
+                                    type="button"
+                                    className="list-row clickable"
+                                    key={deviceId}
+                                    onClick={() => {
+                                        setPendingSend({
+                                            deviceId,
+                                            paths: pendingDropPaths,
+                                        });
+                                        setPendingDropPaths(null);
+                                    }}
+                                >
+                                    <div className="list-row-main">
+                                        <strong>{deviceLabel(deviceId)}</strong>
+                                        <span className="mono small">
+                                            {deviceId.slice(0, 8)}
+                                        </span>
                                     </div>
-                                );
-                            })}
+                                    <span className="muted">Select</span>
+                                </button>
+                            ))}
                         </div>
                     </div>
                 </div>
             )}
+
+            <ToastStack toasts={toasts} onDismiss={dismissToast} />
         </div>
     );
-}
-
-function formatBytes(
-    bytes: number
-): string {
-    if (bytes < 1024) {
-        return `${bytes} B`;
-    }
-
-    if (bytes < 1024 * 1024) {
-        return `${(
-            bytes / 1024
-        ).toFixed(1)} KB`;
-    }
-
-    if (
-        bytes <
-        1024 * 1024 * 1024
-    ) {
-        return `${(
-            bytes /
-            (1024 * 1024)
-        ).toFixed(1)} MB`;
-    }
-
-    return `${(
-        bytes /
-        (1024 * 1024 * 1024)
-    ).toFixed(1)} GB`;
 }
 
 export default App;

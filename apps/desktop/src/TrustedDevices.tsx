@@ -20,9 +20,9 @@ export function TrustedDevices({ devices, onForget }: TrustedDevicesProps) {
         <div className="trusted-list">
             {devices.map((device) => (
                 <div className="trusted-row" key={device.deviceId}>
-                    <div className="transfer-info">
+                    <div className="list-row-main">
                         <strong>{device.deviceName}</strong>
-                        <span>
+                        <span className="muted small">
                             Paired {new Date(device.pairedAt).toLocaleDateString()}
                             {device.lastSeenAt
                                 ? ` · last connected ${new Date(device.lastSeenAt).toLocaleString()}`
@@ -31,7 +31,7 @@ export function TrustedDevices({ devices, onForget }: TrustedDevicesProps) {
                     </div>
 
                     <button
-                        className="disconnect-button"
+                        className="btn btn-sm btn-danger"
                         onClick={() => onForget(device.deviceId)}
                     >
                         Forget

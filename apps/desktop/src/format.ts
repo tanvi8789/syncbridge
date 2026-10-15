@@ -2,7 +2,7 @@
 
 export function formatBytes(bytes: number): string {
     if (!Number.isFinite(bytes)) {
-        return "—";
+        return "n/a";
     }
 
     if (bytes < 1024) {
@@ -22,7 +22,7 @@ export function formatBytes(bytes: number): string {
 
 export function formatRate(bytesPerSecond?: number): string {
     if (bytesPerSecond === undefined || !Number.isFinite(bytesPerSecond)) {
-        return "—";
+        return "n/a";
     }
 
     return `${formatBytes(bytesPerSecond)}/s`;
@@ -30,7 +30,7 @@ export function formatRate(bytesPerSecond?: number): string {
 
 export function formatDuration(ms?: number): string {
     if (ms === undefined || !Number.isFinite(ms)) {
-        return "—";
+        return "n/a";
     }
 
     if (ms < 1000) {
@@ -49,7 +49,7 @@ export function formatDuration(ms?: number): string {
 
 export function formatMs(ms?: number): string {
     if (ms === undefined || !Number.isFinite(ms)) {
-        return "—";
+        return "n/a";
     }
 
     return ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`;
@@ -57,7 +57,7 @@ export function formatMs(ms?: number): string {
 
 export function formatPercent(ratio?: number): string {
     if (ratio === undefined || !Number.isFinite(ratio)) {
-        return "—";
+        return "n/a";
     }
 
     return `${(ratio * 100).toFixed(ratio >= 0.995 || ratio === 0 ? 0 : 1)}%`;

@@ -35,13 +35,9 @@ const RANGES = [
 const PEER_LIMIT = 6;
 
 export function AnalyticsDashboard({
-    collapsed,
-    onToggle,
     explainMode,
     refreshKey,
 }: {
-    collapsed: boolean;
-    onToggle: () => void;
     explainMode: boolean;
     /** Bumped by the parent when a transfer finishes, to force a reload. */
     refreshKey: number;
@@ -73,10 +69,8 @@ export function AnalyticsDashboard({
     }, [rangeDays]);
 
     useEffect(() => {
-        if (!collapsed) {
-            void load();
-        }
-    }, [collapsed, load, refreshKey]);
+        void load();
+    }, [load, refreshKey]);
 
     const handleClear = async () => {
         if (
@@ -142,24 +136,9 @@ export function AnalyticsDashboard({
     return (
         <section className="card viz">
             <div className="card-header">
-                <button
-                    type="button"
-                    className="section-toggle"
-                    aria-expanded={!collapsed}
-                    onClick={onToggle}
-                >
-                    <span
-                        className={`chevron${collapsed ? " collapsed" : ""}`}
-                        aria-hidden="true"
-                    >
-                        ▾
-                    </span>
+                <h2>Analytics</h2>
 
-                    <h2>Analytics</h2>
-                </button>
-
-                {!collapsed && (
-                    <div className="viz-controls">
+                <div className="viz-controls">
                         {RANGES.map((range) => (
                             <button
                                 key={range.label}
@@ -179,13 +158,12 @@ export function AnalyticsDashboard({
                             onClick={() => void load()}
                             disabled={loading}
                         >
-                            {loading ? "..." : "Refresh"}
+                            {loading ? "Refreshing" : "Refresh"}
                         </button>
-                    </div>
-                )}
+                </div>
             </div>
 
-            {collapsed ? null : error ? (
+            {error ? (
                 <div className="empty-state compact">
                     <strong>Analytics unavailable</strong>
                     <p>{error}</p>
@@ -201,7 +179,7 @@ export function AnalyticsDashboard({
                     </p>
                 </div>
             ) : !analytics ? (
-                <p className="viz-empty">Loading…</p>
+                <div className="skeleton-stack" aria-busy="true"><div className="skeleton" /><div className="skeleton" /><div className="skeleton short" /></div>
             ) : (
                 <>
                     {explainMode && (
@@ -350,20 +328,11 @@ export function AnalyticsDashboard({
                     <div className="viz-footer">
                         <button
                             type="button"
-                            className="section-toggle"
+                            className="btn btn-ghost btn-sm"
                             aria-expanded={showTable}
                             onClick={() => setShowTable((value) => !value)}
                         >
-                            <span
-                                className={`chevron${
-                                    showTable ? "" : " collapsed"
-                                }`}
-                                aria-hidden="true"
-                            >
-                                ▾
-                            </span>
-
-                            <span>Table view</span>
+                            {showTable ? "Hide table" : "Show table"}
                         </button>
 
                         <button

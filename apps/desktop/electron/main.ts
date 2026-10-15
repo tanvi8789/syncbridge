@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, nativeTheme } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,6 +39,9 @@ function createWindow(): void {
         height: 800,
         minWidth: 900,
         minHeight: 600,
+        // Matches the page background so there is no white flash in dark mode.
+        backgroundColor: nativeTheme.shouldUseDarkColors ? "#0e1115" : "#f4f5f7",
+        title: "SyncBridge",
         webPreferences: {
             preload: path.join(__dirname, "..", "electron-build", "preload.cjs"),
             contextIsolation: true,

@@ -18,13 +18,9 @@ const PAGE_SIZE = 25;
 type DirectionFilter = "" | "sent" | "received";
 
 export function TransferHistory({
-    collapsed,
-    onToggle,
     explainMode,
     refreshKey,
 }: {
-    collapsed: boolean;
-    onToggle: () => void;
     explainMode: boolean;
     refreshKey: number;
 }) {
@@ -73,10 +69,8 @@ export function TransferHistory({
     }, [search]);
 
     useEffect(() => {
-        if (!collapsed) {
-            void load();
-        }
-    }, [collapsed, load, refreshKey]);
+        void load();
+    }, [load, refreshKey]);
 
     // A new filter invalidates the current page position.
     useEffect(() => setOffset(0), [debouncedSearch, direction]);
@@ -87,31 +81,16 @@ export function TransferHistory({
     return (
         <section className="card">
             <div className="card-header">
-                <button
-                    type="button"
-                    className="section-toggle"
-                    aria-expanded={!collapsed}
-                    onClick={onToggle}
-                >
-                    <span
-                        className={`chevron${collapsed ? " collapsed" : ""}`}
-                        aria-hidden="true"
-                    >
-                        ▾
-                    </span>
-
-                    <h2>Transfer History</h2>
-                </button>
+                <h2>Transfer History</h2>
 
                 <span className="count">{total}</span>
             </div>
 
-            {collapsed ? null : (
-                <>
+            <>
                     {explainMode && (
                         <div className="explain-panel">
                             Unlike the live Transfers list, this survives
-                            restarting the app — every transfer that reached a
+                            restarting the app. Every transfer that reached a
                             final state is written to a SQLite database in
                             <span className="mono"> ~/.syncbridge/history.db</span>.
                         </div>
@@ -147,7 +126,7 @@ export function TransferHistory({
                             <p>{error}</p>
                         </div>
                     ) : page === null ? (
-                        <p className="viz-empty">Loading…</p>
+                        <div className="skeleton-stack" aria-busy="true"><div className="skeleton" /><div className="skeleton" /><div className="skeleton short" /></div>
                     ) : transfers.length === 0 ? (
                         <div className="empty-state compact">
                             <strong>
@@ -199,7 +178,7 @@ export function TransferHistory({
                             </button>
 
                             <span>
-                                {offset + 1}–
+                                {offset + 1} to 
                                 {Math.min(offset + PAGE_SIZE, total)} of {total}
                             </span>
 
@@ -218,7 +197,6 @@ export function TransferHistory({
                         </div>
                     )}
                 </>
-            )}
         </section>
     );
 }
@@ -243,8 +221,8 @@ function HistoryRow({
                 aria-expanded={expanded}
                 onClick={onToggle}
             >
-                <span className="file-icon">
-                    {transfer.direction === "received" ? "↓" : "↑"}
+                <span className="direction-label">
+                    {transfer.direction === "received" ? "In" : "Out"}
                 </span>
 
                 <span className="history-row-info">
@@ -301,10 +279,10 @@ function HistoryRow({
                         <dt>RTT range</dt>
                         <dd>
                             {transfer.rttMinMs !== undefined
-                                ? `${formatMs(transfer.rttMinMs)} – ${formatMs(
+                                ? `${formatMs(transfer.rttMinMs)} to ${formatMs(
                                       transfer.rttMaxMs
                                   )}`
-                                : "—"}
+                                : "n/a"}
                         </dd>
                     </div>
 

@@ -16,20 +16,20 @@ import type {
 
 export const STAGE_EXPLANATIONS: Record<TimelineStage, string> = {
     discovery:
-        "Devices announce themselves with a UDP broadcast to the whole subnet. UDP is fine here because a lost announcement just gets retried on the next round — nothing depends on it arriving.",
+        "Devices announce themselves with a UDP broadcast to the whole subnet. UDP is fine here because a lost announcement just gets retried on the next round, so nothing depends on it arriving.",
     connection:
         "A direct TCP connection is opened on port 41236 and a handshake runs over it. TCP takes over from here because file data must arrive complete and in order.",
     authentication:
-        "Before a connection is accepted the peer must prove it is the device you meant. A new device is paired once with a 6-digit PIN shown on one screen and typed on the other; a device that has paired before proves itself with a stored secret instead. The PIN itself never crosses the network — only a keyed hash of it does.",
+        "Before a connection is accepted the peer must prove it is the device you meant. A new device is paired once with a 6-digit PIN shown on one screen and typed on the other; a device that has paired before proves itself with a stored secret instead. The PIN itself never crosses the network; only a keyed hash of it does.",
     metadata:
         "Before any bytes move, the sender describes the file: its name, exact size, how many chunks it will arrive in, and a SHA-256 checksum of the whole thing. The receiver needs all of this to reassemble and verify.",
     "chunk-transfer":
-        "The file is split into 64 KiB chunks and sent one at a time. The receiver acknowledges each chunk, so both sides always know exactly how far along the transfer is — and the sender can retry anything that stalls.",
+        "The file is split into 64 KiB chunks and sent one at a time. The receiver acknowledges each chunk, so both sides always know exactly how far along the transfer is, and the sender can retry anything that stalls.",
     verification:
         "The receiver reassembles the chunks and hashes the result, comparing it against the checksum from the metadata step. Nothing is written to disk unless the hash matches exactly.",
     completion:
         "Both sides agree the transfer finished successfully. The file is now on disk at its final path and the transfer is marked complete.",
-    sync: "A paired folder was scanned and compared against its baseline — the last state both devices agreed on. Only genuinely changed files are queued for transfer.",
+    sync: "A paired folder was scanned and compared against its baseline, which is the last state both devices agreed on. Only genuinely changed files are queued for transfer.",
 };
 
 export const PROTOCOL_EVENT_EXPLANATIONS: Partial<
@@ -40,7 +40,7 @@ export const PROTOCOL_EVENT_EXPLANATIONS: Partial<
     DISCOVER_RECEIVED:
         "A discovery broadcast arrived from another machine. Devices also receive their own broadcasts, so the first thing checked is whether the sender's device ID is our own.",
     DISCOVER_RESPONSE_SENT:
-        "This device replied directly (unicast, not broadcast) to whoever was asking. The reply advertises our own IP address — not the address the request came from, which is a classic mistake here.",
+        "This device replied directly (unicast, not broadcast) to whoever was asking. The reply advertises our own IP address, not the address the request came from, which is a classic mistake here.",
     DEVICE_DISCOVERED:
         "A peer's reply was accepted and added to the device registry with a timestamp. If it stops answering broadcasts, it eventually ages out of the list automatically.",
     CONNECT_ATTEMPT:
@@ -48,7 +48,7 @@ export const PROTOCOL_EVENT_EXPLANATIONS: Partial<
     CONNECT_REQUEST_SENT:
         "A CONNECT_REQUEST was written to the socket. It carries a request ID to match the reply against, a message ID, a sequence number, and a proposed session ID.",
     CONNECT_REQUEST_RECEIVED:
-        "An incoming CONNECT_REQUEST is being validated — checking the protocol version matches and that this is not a duplicate or a connection to ourselves.",
+        "An incoming CONNECT_REQUEST is being validated: checking the protocol version matches and that this is not a duplicate or a connection to ourselves.",
     PAIRING_CHALLENGE_SENT:
         "The device being connected to challenged the newcomer. For an unknown device it generated a 6-digit PIN and shows it on screen; for a previously paired device it just asks for proof of the stored secret. The challenge carries a fresh random nonce and an ephemeral X25519 public key.",
     PAIRING_CHALLENGE_RECEIVED:
@@ -58,22 +58,22 @@ export const PROTOCOL_EVENT_EXPLANATIONS: Partial<
     PAIRING_VERIFIED:
         "Both sides proved they know the PIN (or the stored secret). The ECDH shared secret is now saved as the long-term pairing secret, so next time no PIN is needed.",
     PAIRING_FAILED:
-        "Pairing did not complete — a wrong PIN too many times, a timeout, or the user cancelling. No session is established and nothing can be sent.",
+        "Pairing did not complete. Causes are a wrong PIN too many times, a timeout, or the user cancelling. No session is established and nothing can be sent.",
     CONNECT_ACCEPTED:
         "The handshake succeeded and a session ID is now shared by both devices. Every transfer and sync event from here on is tagged with it, which is what makes this timeline possible.",
     CONNECT_REJECTED:
-        "The peer refused the connection and said why — typically a duplicate connection, a protocol version mismatch, or an attempt to connect to itself.",
+        "The peer refused the connection and said why, typically a duplicate connection, a protocol version mismatch, or an attempt to connect to itself.",
     CONNECTION_CLOSED:
         "The TCP socket closed. Both lookup tables tracking this connection are cleaned up, and any transfer still running over it stops.",
     MALFORMED_MESSAGE:
-        "Data arrived that could not be decoded as a valid frame — either the declared length exceeded the 16 MiB cap or the payload was not valid JSON. The read buffer is reset rather than trying to resynchronise.",
+        "Data arrived that could not be decoded as a valid frame: either the declared length exceeded the 16 MiB cap or the payload was not valid JSON. The read buffer is reset rather than trying to resynchronise.",
 };
 
 export const TRANSFER_EVENT_EXPLANATIONS: Partial<
     Record<TransferEvent["type"], string>
 > = {
     TRANSFER_REQUESTED:
-        "The sender asked permission to send a file. The receiver registers it immediately so it appears in the UI, then accepts automatically — the device was already authenticated by pairing. A sensitive file arrives encrypted and stays locked until its PIN is entered.",
+        "The sender asked permission to send a file. The receiver registers it immediately so it appears in the UI, then accepts automatically, because the device was already authenticated by pairing. A sensitive file arrives encrypted and stays locked until its PIN is entered.",
     CHUNK_SENT:
         "A 64 KiB slice of the file was Base64-encoded into a JSON message and written to the socket. If the kernel's send buffer was full, the sender waits for it to drain rather than queueing in memory.",
     CHUNK_ACKED:
@@ -115,7 +115,7 @@ export const TRANSFER_STEP_EXPLANATIONS: Record<string, string> = {
     ACCEPTED:
         "The peer agreed. The sender is now hashing the file and preparing the metadata message.",
     TRANSFERRING:
-        "Chunks are flowing. Each square in the grid below is one 64 KiB chunk — it turns blue when sent and green once the peer confirms it.",
+        "Chunks are flowing. Each square in the grid below is one 64 KiB chunk. It turns blue when sent and green once the peer confirms it.",
     VERIFYING:
         "Every chunk is acknowledged. The receiver is reassembling the file and checking its SHA-256 against the checksum the sender promised.",
     COMPLETED:

@@ -18,6 +18,8 @@ Every step of the networking protocol is recorded and can be replayed in the UI.
 - Shared clipboard between connected devices
 - Protocol timeline with replay, "explain mode", and session export
 - Transfer history and analytics dashboard
+- Sidebar layout with a live map of nearby devices, light and dark themes
+  (follows the system setting by default), and toast notifications
 
 ## Tech Stack
 
@@ -70,7 +72,7 @@ npx tsx src/connection/test-connection-lifecycle.ts  # handshake, rejects, sessi
    device list.
 2. On device **A**, click **Connect** next to device **B**.
 3. Device **B** shows a 6-digit PIN. Device **A** asks for it — type it in.
-4. Both devices now list each other under **Paired devices**. From now on
+4. Both devices now list each other under **Paired devices** (Devices view). From now on
    connecting needs no PIN.
 
 You have 3 attempts and 2 minutes. To revoke a device, click **Forget** next to
@@ -86,7 +88,8 @@ every transfer, sync and clipboard message from it.
 
 ## Sending a sensitive file
 
-1. Click **Send File** (or drop a file on the window) and pick the device.
+1. Drop a file on a connected device in the Devices view (or use **Send file**
+   in Transfers) and pick the device.
 2. In the dialog tick **This file is sensitive** and choose a PIN (at least 6
    characters — a longer passphrase is safer).
 3. Tell the receiver the PIN yourself, in person or by message. SyncBridge never
