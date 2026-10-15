@@ -37,6 +37,9 @@ export interface FileTransferRequest {
     relativePath?: string;
     sourceModifiedAt?: number;
 
+    /** The payload is PIN-encrypted; the receiver must keep it locked. */
+    sensitive?: boolean;
+
     timestamp: number;
 }
 
@@ -80,6 +83,8 @@ export interface FileMetadata {
     syncPairId?: string;
     relativePath?: string;
     sourceModifiedAt?: number;
+
+    sensitive?: boolean;
 
     timestamp: number;
 }

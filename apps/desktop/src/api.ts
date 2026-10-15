@@ -130,7 +130,7 @@ export interface ProtocolEvent {
     id: string;
     timestamp: number;
     type: string;
-    layer: "discovery" | "connection" | "framing";
+    layer: "discovery" | "connection" | "authentication" | "framing";
     deviceId?: string;
     sessionId?: string;
     detail?: string;
@@ -180,6 +180,12 @@ export interface Transfer {
     syncPairId?: string;
     relativePath?: string;
     sessionId?: string;
+
+    /** PIN-protected transfer; a received file stays encrypted while `locked`. */
+    sensitive?: boolean;
+    locked?: boolean;
+    /** Sender-side only: the real file name, hidden from the receiver. */
+    originalFileName?: string;
 }
 
 export interface SyncPair {
@@ -271,8 +277,24 @@ async function fetchApi<T>(
     );
 
     if (!response.ok) {
+        /*
+         * Prefer the server's own explanation (e.g. "Incorrect PIN")
+         * over a bare status code.
+         */
+        let detail: string | undefined;
+
+        try {
+            const body = (await response.json()) as { error?: unknown };
+
+            if (typeof body.error === "string") {
+                detail = body.error;
+            }
+        } catch {
+            // Not a JSON error body.
+        }
+
         throw new Error(
-            `API request failed: ${response.status}`
+            detail ?? `API request failed: ${response.status}`
         );
     }
 
@@ -368,9 +390,15 @@ export function disconnectDevice(
     );
 }
 
+export interface SensitiveOptions {
+    sensitive: true;
+    pin: string;
+}
+
 export function startTransfer(
     deviceId: string,
-    filePath: string
+    filePath: string,
+    options?: SensitiveOptions
 ): Promise<TransferResponse> {
     return fetchApi<TransferResponse>(
         "/api/transfers",
@@ -382,9 +410,109 @@ export function startTransfer(
             body: JSON.stringify({
                 deviceId,
                 filePath,
+                ...options,
             }),
         }
     );
+}
+
+export function unlockTransfer(
+    transferId: string,
+    pin: string
+): Promise<Transfer> {
+    return fetchApi<Transfer>(
+        `/api/transfers/${transferId}/unlock`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pin }),
+        }
+    );
+}
+
+/* ---------------------------------------------------------------
+   Pairing & trusted devices
+   --------------------------------------------------------------- */
+
+export type PairingEventType =
+    | "PIN_DISPLAY"
+    | "PIN_ENTRY"
+    | "PAIRED"
+    | "PAIRING_FAILED";
+
+export interface PairingEvent {
+    type: PairingEventType;
+    deviceId: string;
+    deviceName?: string;
+    pin?: string;
+    attemptsLeft?: number;
+    error?: string;
+    expiresAt?: number;
+    timestamp: number;
+}
+
+export interface PairingPrompt {
+    /** "display": show this PIN here. "entry": type the PIN shown on the peer. */
+    kind: "display" | "entry";
+    deviceId: string;
+    deviceName?: string;
+    pin?: string;
+    attemptsLeft: number;
+    error?: string;
+    expiresAt: number;
+}
+
+export interface TrustedDevice {
+    deviceId: string;
+    deviceName: string;
+    pairedAt: number;
+    lastSeenAt?: number;
+}
+
+export interface PairingState {
+    prompts: PairingPrompt[];
+    trusted: TrustedDevice[];
+}
+
+export function getPairing(): Promise<PairingState> {
+    return fetchApi<PairingState>("/api/pairing");
+}
+
+export function submitPairingPin(
+    deviceId: string,
+    pin: string
+): Promise<{ status: string }> {
+    return fetchApi("/api/pairing/pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId, pin }),
+    });
+}
+
+export function cancelPairing(
+    deviceId: string
+): Promise<{ status: string }> {
+    return fetchApi("/api/pairing/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId }),
+    });
+}
+
+export function removeTrustedDevice(
+    deviceId: string
+): Promise<{ status: string }> {
+    return fetchApi(
+        `/api/trusted-devices/${encodeURIComponent(deviceId)}`,
+        { method: "DELETE" }
+    );
+}
+
+export function subscribeToPairingEvents(
+    onEvent: (event: PairingEvent) => void,
+    onError?: () => void
+): () => void {
+    return subscribeToStream<PairingEvent>("pairing-event", onEvent, onError);
 }
 
 export function pauseTransfer(

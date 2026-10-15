@@ -7,6 +7,7 @@ import type { ProtocolEvent } from "./protocol-event";
 import type { TransferEvent } from "./transfer/transfer-event";
 import type { SyncEvent } from "./sync/sync-event";
 import type { ClipboardEvent } from "./clipboard/clipboard-event";
+import type { PairingEvent } from "./pairing/pairing-messages";
 import { SessionStore } from "./session/session-store";
 import {
     HistoryStore,
@@ -79,7 +80,9 @@ export class NetworkingEngine extends EventEmitter {
                 (event) => this.publishEvent(event),
                 (event) => this.publishTransferEvent(event),
                 (event) => this.publishSyncEvent(event),
-                (event) => this.publishClipboardEvent(event)
+                (event) => this.publishClipboardEvent(event),
+                undefined,
+                (event) => this.emit("pairing-event", event satisfies PairingEvent)
             );
 
         this.tcpServer =
@@ -187,6 +190,26 @@ export class NetworkingEngine extends EventEmitter {
             .getConnections();
     }
 
+    getTrustedDevices() {
+        return this.connectionManager.getTrustedDevices();
+    }
+
+    removeTrustedDevice(deviceId: string): boolean {
+        return this.connectionManager.removeTrustedDevice(deviceId);
+    }
+
+    getPairingPrompts() {
+        return this.connectionManager.getPairingPrompts();
+    }
+
+    submitPairingPin(deviceId: string, pin: string): void {
+        this.connectionManager.submitPairingPin(deviceId, pin);
+    }
+
+    cancelPairing(deviceId: string): boolean {
+        return this.connectionManager.cancelPairing(deviceId);
+    }
+
     disconnectDevice(deviceId: string): boolean {
         return this.connectionManager.disconnectDevice(deviceId);
     }
@@ -198,12 +221,18 @@ export class NetworkingEngine extends EventEmitter {
 
     requestFileTransfer(
         deviceId: string,
-        filePath: string
+        filePath: string,
+        sensitive?: { pin: string }
     ) {
         return this.connectionManager.requestTransfer(
             deviceId,
-            filePath
+            filePath,
+            sensitive
         );
+    }
+
+    unlockTransfer(transferId: string, pin: string) {
+        return this.connectionManager.unlockTransfer(transferId, pin);
     }
 
     pauseTransfer(transferId: string): void {

@@ -1811,3 +1811,133 @@ line.viz-gridline {
     background: var(--series-1);
 }
 
+
+/* ---------------------------------------------------------------
+   Pairing & sensitive files
+   --------------------------------------------------------------- */
+
+.pairing-dialog {
+    width: min(460px, 100%);
+}
+
+.pairing-pin {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 40px;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-align: center;
+    padding: 18px 12px;
+    background: #f5f6f8;
+    border: 1px solid #e1e3e6;
+    border-radius: 12px;
+    color: #17191c;
+    user-select: all;
+}
+
+.pairing-hint {
+    margin: 0;
+    color: #5f666d;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.pairing-form {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+}
+
+.pairing-input {
+    flex: 1;
+    min-width: 0;
+    padding: 12px 14px;
+    border: 1px solid #d5d8dc;
+    border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 22px;
+    letter-spacing: 0.2em;
+    text-align: center;
+}
+
+.pairing-input.pin-text {
+    font-size: 15px;
+    letter-spacing: normal;
+    text-align: left;
+}
+
+.pairing-input:focus {
+    outline: 2px solid #17191c;
+    outline-offset: 1px;
+}
+
+.pairing-error {
+    padding: 10px 12px;
+    background: #fbecec;
+    border: 1px solid #f1cccc;
+    border-radius: 8px;
+    color: #a83232;
+    font-size: 13px;
+}
+
+.pairing-footer {
+    display: flex;
+    justify-content: space-between;
+    color: #7a8088;
+    font-size: 12px;
+}
+
+.pairing-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.sensitive-toggle {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 12px 14px;
+    border: 1px solid #e1e3e6;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+.sensitive-toggle input {
+    margin-top: 3px;
+}
+
+.sensitive-toggle small {
+    display: block;
+    margin-top: 2px;
+    color: #7a8088;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.sensitive-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #fff4d6;
+    border: 1px solid #f0dca0;
+    color: #8a6500;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.trusted-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.trusted-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid #e1e3e6;
+    border-radius: 10px;
+}

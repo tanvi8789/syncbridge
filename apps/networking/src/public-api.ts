@@ -58,3 +58,11 @@ export type {
 } from "./history/history-store";
 
 export { HISTORY_SCHEMA_VERSION } from "./history/history-store";
+
+export type {
+    PairingEvent,
+    PairingEventType,
+    PairingPrompt,
+} from "./pairing/pairing-messages";
+
+export type { TrustedDevice } from "./pairing/trust-store";

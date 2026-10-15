@@ -130,6 +130,8 @@ export class TransferReceiver {
         };
 
         transfer.fileName = metadata.fileName;
+        transfer.sensitive =
+            metadata.sensitive === true && !metadata.syncPairId;
         transfer.fileSize = metadata.fileSize;
         transfer.totalChunks = metadata.totalChunks;
         transfer.checksum = metadata.checksum;
@@ -499,6 +501,9 @@ export class TransferReceiver {
 
         transfer.savedPath =
             finalPath;
+
+        // A sensitive file stays encrypted until its PIN is entered.
+        transfer.locked = transfer.sensitive === true;
 
         this.onEvent?.({
             transferId: transfer.transferId,

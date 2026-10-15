@@ -20,7 +20,7 @@ export const STAGE_EXPLANATIONS: Record<TimelineStage, string> = {
     connection:
         "A direct TCP connection is opened on port 41236 and a handshake runs over it. TCP takes over from here because file data must arrive complete and in order.",
     authentication:
-        "Reserved for device pairing and trust. SyncBridge does not implement this yet — any device on the network is currently accepted, which is why this step stays empty.",
+        "Before a connection is accepted the peer must prove it is the device you meant. A new device is paired once with a 6-digit PIN shown on one screen and typed on the other; a device that has paired before proves itself with a stored secret instead. The PIN itself never crosses the network — only a keyed hash of it does.",
     metadata:
         "Before any bytes move, the sender describes the file: its name, exact size, how many chunks it will arrive in, and a SHA-256 checksum of the whole thing. The receiver needs all of this to reassemble and verify.",
     "chunk-transfer":
@@ -49,6 +49,16 @@ export const PROTOCOL_EVENT_EXPLANATIONS: Partial<
         "A CONNECT_REQUEST was written to the socket. It carries a request ID to match the reply against, a message ID, a sequence number, and a proposed session ID.",
     CONNECT_REQUEST_RECEIVED:
         "An incoming CONNECT_REQUEST is being validated — checking the protocol version matches and that this is not a duplicate or a connection to ourselves.",
+    PAIRING_CHALLENGE_SENT:
+        "The device being connected to challenged the newcomer. For an unknown device it generated a 6-digit PIN and shows it on screen; for a previously paired device it just asks for proof of the stored secret. The challenge carries a fresh random nonce and an ephemeral X25519 public key.",
+    PAIRING_CHALLENGE_RECEIVED:
+        "The peer asked this device to prove itself. A new device waits for the user to type the PIN shown on the peer; a paired device answers automatically with its stored secret.",
+    PAIRING_PROOF_SENT:
+        "An HMAC over both device IDs, both nonces and both public keys, keyed with the PIN, was sent. Because the public keys are inside the hash, a man-in-the-middle swapping keys cannot produce a valid proof without knowing the PIN.",
+    PAIRING_VERIFIED:
+        "Both sides proved they know the PIN (or the stored secret). The ECDH shared secret is now saved as the long-term pairing secret, so next time no PIN is needed.",
+    PAIRING_FAILED:
+        "Pairing did not complete — a wrong PIN too many times, a timeout, or the user cancelling. No session is established and nothing can be sent.",
     CONNECT_ACCEPTED:
         "The handshake succeeded and a session ID is now shared by both devices. Every transfer and sync event from here on is tagged with it, which is what makes this timeline possible.",
     CONNECT_REJECTED:
@@ -63,7 +73,7 @@ export const TRANSFER_EVENT_EXPLANATIONS: Partial<
     Record<TransferEvent["type"], string>
 > = {
     TRANSFER_REQUESTED:
-        "The sender asked permission to send a file. The receiver registers it immediately so it appears in the UI, then accepts automatically — there is no approval prompt yet.",
+        "The sender asked permission to send a file. The receiver registers it immediately so it appears in the UI, then accepts automatically — the device was already authenticated by pairing. A sensitive file arrives encrypted and stays locked until its PIN is entered.",
     CHUNK_SENT:
         "A 64 KiB slice of the file was Base64-encoded into a JSON message and written to the socket. If the kernel's send buffer was full, the sender waits for it to drain rather than queueing in memory.",
     CHUNK_ACKED:

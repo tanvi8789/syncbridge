@@ -156,6 +156,8 @@ export class TransferSender {
                     ? stats.mtimeMs
                     : undefined,
 
+                sensitive: transfer.sensitive || undefined,
+
                 timestamp:
                     Date.now(),
             };

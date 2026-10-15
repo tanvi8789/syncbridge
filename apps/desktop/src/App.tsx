@@ -20,6 +20,12 @@ import {
     removeSyncPair,
     startTransfer,
     getClipboard,
+    getPairing,
+    cancelPairing,
+    removeTrustedDevice,
+    submitPairingPin,
+    unlockTransfer,
+    subscribeToPairingEvents,
     setClipboardEnabled,
     shareClipboard,
     subscribeToClipboardEvents,
@@ -30,6 +36,9 @@ import {
     type ClipboardEvent as SyncClipboardEvent,
     type ClipboardState,
     type ConnectionInfo,
+    type PairingPrompt,
+    type SensitiveOptions,
+    type TrustedDevice,
     type DeviceInfo,
     type DiscoveredDevice,
     type SessionSummary,
@@ -45,6 +54,9 @@ import {
     SYNC_STATUS_LABEL,
 } from "./sync-activity";
 
+import { PairingDialog } from "./PairingDialog";
+import { SendOptionsDialog, UnlockDialog } from "./PinDialog";
+import { TrustedDevices } from "./TrustedDevices";
 import { AnalyticsDashboard } from "./AnalyticsDashboard";
 import { TransferHistory } from "./TransferHistory";
 import { TransferVisualizer } from "./TransferVisualizer";
@@ -70,6 +82,19 @@ function App() {
 
     const [apiOnline, setApiOnline] =
         useState(false);
+
+    const [pairingPrompts, setPairingPrompts] =
+        useState<PairingPrompt[]>([]);
+
+    const [trustedDevices, setTrustedDevices] =
+        useState<TrustedDevice[]>([]);
+
+    // Files waiting on the "is this sensitive?" question before sending.
+    const [pendingSend, setPendingSend] =
+        useState<{ deviceId: string; paths: string[] } | null>(null);
+
+    const [unlockTransferId, setUnlockTransferId] =
+        useState<string | null>(null);
 
     const [error, setError] =
         useState<string | null>(null);
@@ -206,6 +231,7 @@ function App() {
                     syncPairsData,
                     sessionsData,
                     clipboardData,
+                    pairingData,
                 ] = await Promise.all([
                     getDevice(),
                     getDevices(),
@@ -214,6 +240,7 @@ function App() {
                     getSyncPairs(),
                     getSessions(),
                     getClipboard(),
+                    getPairing(),
                 ]);
 
                 setDevice(deviceData);
@@ -223,6 +250,8 @@ function App() {
                 setSyncPairs(syncPairsData);
                 setSessions(sessionsData);
                 setClipboard(clipboardData);
+                setPairingPrompts(pairingData.prompts);
+                setTrustedDevices(pairingData.trusted);
 
                 setApiOnline(true);
                 setError(null);
@@ -253,6 +282,18 @@ function App() {
             interval
             );
     }, [loadData]);
+
+    useEffect(
+        () =>
+            subscribeToPairingEvents((event) => {
+                if (event.type === "PAIRING_FAILED" && event.error) {
+                    setError(`Pairing failed: ${event.error}`);
+                }
+
+                void loadData();
+            }),
+        [loadData]
+    );
 
     useEffect(() =>
         subscribeToProtocolEvents(
@@ -567,12 +608,8 @@ function App() {
                 return;
             }
 
-            await startTransfer(
-                deviceId,
-                filePath
-            );
-
-            await loadData();
+            // Ask whether the file is sensitive before anything is sent.
+            setPendingSend({ deviceId, paths: [filePath] });
         } catch (err) {
             setError(
                 err instanceof Error
@@ -590,14 +627,15 @@ function App() {
      */
     const sendPathsToDevice = async (
         deviceId: string,
-        paths: string[]
+        paths: string[],
+        options?: SensitiveOptions
     ) => {
         try {
             setSendingDeviceId(deviceId);
             setError(null);
 
             for (const filePath of paths) {
-                await startTransfer(deviceId, filePath);
+                await startTransfer(deviceId, filePath, options);
             }
 
             await loadData();
@@ -610,8 +648,52 @@ function App() {
         } finally {
             setSendingDeviceId(null);
             setPendingDropPaths(null);
+            setPendingSend(null);
         }
     };
+
+    const handleSubmitPin = async (deviceId: string, pin: string) => {
+        await submitPairingPin(deviceId, pin);
+        await loadData();
+    };
+
+    const handleCancelPairing = async (deviceId: string) => {
+        try {
+            await cancelPairing(deviceId);
+        } finally {
+            await loadData();
+        }
+    };
+
+    const handleForgetDevice = async (deviceId: string) => {
+        try {
+            await removeTrustedDevice(deviceId);
+            await loadData();
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "Failed to forget device"
+            );
+        }
+    };
+
+    const handleUnlock = async (pin: string) => {
+        if (!unlockTransferId) {
+            return;
+        }
+
+        await unlockTransfer(unlockTransferId, pin);
+        setUnlockTransferId(null);
+        await loadData();
+    };
+
+    const deviceLabel = (deviceId: string) =>
+        connections.find((connection) => connection.deviceId === deviceId)
+            ?.deviceName ??
+        devices.find((candidate) => candidate.deviceId === deviceId)
+            ?.deviceName ??
+        deviceId.slice(0, 8);
 
     const handleDragEnter = (
         event: ReactDragEvent<HTMLDivElement>
@@ -699,7 +781,7 @@ function App() {
         }
 
         if (targets.length === 1) {
-            await sendPathsToDevice(targets[0], paths);
+            setPendingSend({ deviceId: targets[0], paths });
             return;
         }
 
@@ -1599,6 +1681,41 @@ function App() {
                         <button
                             type="button"
                             className="section-toggle"
+                            aria-expanded={collapsedSections.paired !== true}
+                            onClick={() => toggleSection("paired")}
+                        >
+                            <span
+                                className={`chevron${
+                                    collapsedSections.paired === true
+                                        ? " collapsed"
+                                        : ""
+                                }`}
+                                aria-hidden="true"
+                            >
+                                ▾
+                            </span>
+
+                            <h2>Paired devices</h2>
+                        </button>
+
+                        <span className="count">
+                            {trustedDevices.length}
+                        </span>
+                    </div>
+
+                    {collapsedSections.paired === true ? null : (
+                        <TrustedDevices
+                            devices={trustedDevices}
+                            onForget={handleForgetDevice}
+                        />
+                    )}
+                </section>
+
+                <section className="card">
+                    <div className="card-header">
+                        <button
+                            type="button"
+                            className="section-toggle"
                             aria-expanded={!transfersCollapsed}
                             onClick={() => toggleSection("transfers")}
                         >
@@ -1654,9 +1771,22 @@ function App() {
 
                                         <div className="transfer-info">
                                             <strong>
-                                                {
-                                                    transfer.fileName
-                                                }
+                                                {transfer.sensitive &&
+                                                transfer.direction === "sent"
+                                                    ? transfer.originalFileName ??
+                                                      transfer.fileName
+                                                    : transfer.sensitive &&
+                                                        transfer.locked
+                                                      ? "Sensitive file"
+                                                      : transfer.fileName}
+
+                                                {transfer.sensitive && (
+                                                    <span className="sensitive-badge">
+                                                        {transfer.locked
+                                                            ? "🔒 Locked"
+                                                            : "🔒 Sensitive"}
+                                                    </span>
+                                                )}
 
                                                 {transfer.syncPairId && (
                                                     <span className="session-badge" style={{ marginLeft: "8px" }}>
@@ -1697,7 +1827,24 @@ function App() {
 
                                             {transfer.direction === "received" &&
                                                 transfer.state === "COMPLETED" &&
+                                                transfer.locked && (
+                                                    <button
+                                                        className="connect-button"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            setUnlockTransferId(
+                                                                transfer.transferId
+                                                            );
+                                                        }}
+                                                    >
+                                                        Unlock
+                                                    </button>
+                                                )}
+
+                                            {transfer.direction === "received" &&
+                                                transfer.state === "COMPLETED" &&
                                                 transfer.savedPath &&
+                                                !transfer.locked &&
                                                 window.electronAPI?.showInFolder && (
                                                     <button
                                                         className="connect-button"
@@ -1778,6 +1925,39 @@ function App() {
                 );
             })()}
 
+            {pairingPrompts[0] && (
+                <PairingDialog
+                    // A wrong guess changes attemptsLeft, which remounts the dialog with an empty field.
+                    key={`${pairingPrompts[0].kind}-${pairingPrompts[0].deviceId}-${pairingPrompts[0].attemptsLeft}`}
+                    prompt={pairingPrompts[0]}
+                    onSubmit={handleSubmitPin}
+                    onCancel={handleCancelPairing}
+                />
+            )}
+
+            {pendingSend && (
+                <SendOptionsDialog
+                    fileCount={pendingSend.paths.length}
+                    deviceLabel={deviceLabel(pendingSend.deviceId)}
+                    busy={sendingDeviceId !== null}
+                    onCancel={() => setPendingSend(null)}
+                    onConfirm={(options) =>
+                        void sendPathsToDevice(
+                            pendingSend.deviceId,
+                            pendingSend.paths,
+                            options
+                        )
+                    }
+                />
+            )}
+
+            {unlockTransferId && (
+                <UnlockDialog
+                    onUnlock={handleUnlock}
+                    onCancel={() => setUnlockTransferId(null)}
+                />
+            )}
+
             {pendingDropPaths && (
                 <div
                     className="visualizer-overlay"
@@ -1833,16 +2013,15 @@ function App() {
                                             disabled={
                                                 sendingDeviceId !== null
                                             }
-                                            onClick={() =>
-                                                sendPathsToDevice(
+                                            onClick={() => {
+                                                setPendingSend({
                                                     deviceId,
-                                                    pendingDropPaths
-                                                )
-                                            }
+                                                    paths: pendingDropPaths,
+                                                });
+                                                setPendingDropPaths(null);
+                                            }}
                                         >
-                                            {sendingDeviceId === deviceId
-                                                ? "Sending…"
-                                                : "Send"}
+                                            Send
                                         </button>
                                     </div>
                                 );

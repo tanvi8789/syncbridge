@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import net from "node:net";
@@ -30,6 +31,14 @@ import {
 } from "../connection/framing";
 
 import {
+    SENSITIVE_EXTENSION,
+    WrongPinError,
+    decryptFileWithPin,
+    encryptFileWithPin,
+    validateSensitivePin,
+} from "./sensitive-crypto";
+
+import {
     TransferSender,
 } from "./transfer-sender";
 
@@ -49,7 +58,13 @@ interface OutgoingTransfer {
     transfer: Transfer;
     filePath: string;
     socket: net.Socket;
+
+    /** Holds the encrypted copy of a sensitive file until the transfer ends. */
+    tempDirectory?: string;
 }
+
+const UNLOCK_MAX_ATTEMPTS = 5;
+const UNLOCK_LOCKOUT_MS = 30_000;
 
 export class TransferManager {
     private transfers =
@@ -57,6 +72,9 @@ export class TransferManager {
 
     private outgoingTransfers =
         new Map<string, OutgoingTransfer>();
+
+    private unlockAttempts =
+        new Map<string, { failures: number; lockedUntil: number }>();
 
     private sender: TransferSender;
     private receiver: TransferReceiver;
@@ -93,7 +111,8 @@ export class TransferManager {
         senderDeviceId: string,
         filePath: string,
         peerDeviceId: string,
-        syncInfo?: { syncPairId: string; relativePath: string }
+        syncInfo?: { syncPairId: string; relativePath: string },
+        sensitive?: { pin: string }
     ): string | undefined {
         /*
          * Make sure the file exists.
@@ -124,15 +143,42 @@ export class TransferManager {
         const transferId =
             randomUUID();
 
-        const fileName =
-            path.basename(filePath);
-
-        const fileSize =
-            stats.size;
-
-        if (fileSize > MAX_FILE_BYTES) {
+        if (stats.size > MAX_FILE_BYTES) {
             throw new Error("Files larger than 2 GiB are not supported");
         }
+
+        /*
+         * A sensitive file is encrypted into a temp copy first, and
+         * that copy is what goes through the normal chunked pipeline —
+         * so nothing readable is ever sent, and its name is hidden.
+         */
+        let sendPath = filePath;
+        let tempDirectory: string | undefined;
+
+        if (sensitive) {
+            validateSensitivePin(sensitive.pin);
+
+            tempDirectory = fs.mkdtempSync(
+                path.join(os.tmpdir(), "syncbridge-")
+            );
+            sendPath = path.join(
+                tempDirectory,
+                `sensitive-${transferId.slice(0, 8)}${SENSITIVE_EXTENSION}`
+            );
+
+            try {
+                encryptFileWithPin(filePath, sendPath, sensitive.pin);
+            } catch (error) {
+                fs.rmSync(tempDirectory, { recursive: true, force: true });
+                throw error;
+            }
+        }
+
+        const fileName =
+            path.basename(sendPath);
+
+        const fileSize =
+            fs.statSync(sendPath).size;
 
         const totalChunks =
             Math.ceil(
@@ -162,6 +208,11 @@ export class TransferManager {
             relativePath: syncInfo?.relativePath,
             sessionId,
 
+            sensitive: sensitive ? true : undefined,
+            originalFileName: sensitive
+                ? path.basename(filePath)
+                : undefined,
+
             state: "REQUESTED",
         };
 
@@ -174,8 +225,9 @@ export class TransferManager {
             transferId,
             {
                 transfer,
-                filePath,
+                filePath: sendPath,
                 socket,
+                tempDirectory,
             }
         );
 
@@ -207,6 +259,8 @@ export class TransferManager {
             syncPairId: syncInfo?.syncPairId,
             relativePath: syncInfo?.relativePath,
             sourceModifiedAt: syncInfo ? stats.mtimeMs : undefined,
+
+            sensitive: sensitive ? true : undefined,
 
             timestamp:
                 Date.now(),
@@ -402,7 +456,7 @@ export class TransferManager {
 
         this.sendMessage(socket, cancel);
 
-        this.outgoingTransfers.delete(transferId);
+        this.releaseOutgoing(transferId);
     }
 
     /**
@@ -552,6 +606,10 @@ export class TransferManager {
             syncPairId: request.syncPairId,
             relativePath: request.relativePath,
             sessionId,
+            sensitive:
+                request.sensitive === true && !request.syncPairId
+                    ? true
+                    : undefined,
             state: "REQUESTED",
         });
 
@@ -659,9 +717,7 @@ export class TransferManager {
                 "REJECTED";
         }
 
-        this.outgoingTransfers.delete(
-            response.transferId
-        );
+        this.releaseOutgoing(response.transferId);
 
         this.transfers.delete(
             response.transferId
@@ -710,9 +766,7 @@ export class TransferManager {
          * The transfer is no longer actively
          * sending, so remove the outgoing entry.
          */
-        this.outgoingTransfers.delete(
-            message.transferId
-        );
+        this.releaseOutgoing(message.transferId);
     }
 
     /**
@@ -838,10 +892,89 @@ export class TransferManager {
 
         if (this.outgoingTransfers.has(message.transferId)) {
             this.sender.cancel(message.transferId);
-            this.outgoingTransfers.delete(message.transferId);
+            this.releaseOutgoing(message.transferId);
         } else {
             this.receiver.handleCancel(message.transferId);
         }
+    }
+
+    /** Forget an outgoing transfer and shred its encrypted temp copy. */
+    private releaseOutgoing(transferId: string): void {
+        const outgoing = this.outgoingTransfers.get(transferId);
+
+        if (outgoing?.tempDirectory) {
+            fs.rmSync(outgoing.tempDirectory, {
+                recursive: true,
+                force: true,
+            });
+        }
+
+        this.outgoingTransfers.delete(transferId);
+    }
+
+    /**
+     * Decrypt a received sensitive file with the PIN the sender
+     * shared. The encrypted copy is deleted once decryption works.
+     */
+    unlockTransfer(transferId: string, pin: string): Transfer {
+        const transfer = this.transfers.get(transferId);
+
+        if (
+            !transfer ||
+            transfer.direction !== "received" ||
+            !transfer.sensitive
+        ) {
+            throw new Error("Not a received sensitive transfer");
+        }
+
+        if (!transfer.locked || !transfer.savedPath) {
+            throw new Error("This file is not locked");
+        }
+
+        const attempts = this.unlockAttempts.get(transferId) ?? {
+            failures: 0,
+            lockedUntil: 0,
+        };
+
+        if (Date.now() < attempts.lockedUntil) {
+            throw new Error(
+                `Too many wrong PINs — try again in ${Math.ceil(
+                    (attempts.lockedUntil - Date.now()) / 1000
+                )}s`
+            );
+        }
+
+        let unlockedPath: string;
+
+        try {
+            unlockedPath = decryptFileWithPin(
+                transfer.savedPath,
+                path.dirname(transfer.savedPath),
+                pin
+            );
+        } catch (error) {
+            if (error instanceof WrongPinError) {
+                attempts.failures++;
+
+                if (attempts.failures >= UNLOCK_MAX_ATTEMPTS) {
+                    attempts.failures = 0;
+                    attempts.lockedUntil = Date.now() + UNLOCK_LOCKOUT_MS;
+                }
+
+                this.unlockAttempts.set(transferId, attempts);
+            }
+
+            throw error;
+        }
+
+        fs.rmSync(transfer.savedPath, { force: true });
+
+        transfer.savedPath = unlockedPath;
+        transfer.fileName = path.basename(unlockedPath);
+        transfer.locked = false;
+        this.unlockAttempts.delete(transferId);
+
+        return transfer;
     }
 
     getTransfer(

@@ -8,6 +8,29 @@ import type {
     ConnectReject,
     ConnectRejectReason,
 } from "../connection-messages";
+import type {
+    ConnectChallenge,
+    PairProof,
+    PairRetry,
+    PairingEventListener,
+    PairingMode,
+    PairingPrompt,
+} from "../pairing/pairing-messages";
+import {
+    PAIRING_MAX_ATTEMPTS,
+    PAIRING_TIMEOUT_MS,
+    computeProof,
+    derivePairingSecret,
+    generateEphemeralKeys,
+    generateNonce,
+    generatePin,
+    isWellFormedPin,
+    isWellFormedPublicKey,
+    proofsMatch,
+    type EphemeralKeys,
+    type Transcript,
+} from "../pairing/pairing-crypto";
+import { TrustStore } from "../pairing/trust-store";
 
 import type { DiscoveredDevice } from "../discovery/device-registry";
 import { ConnectionState } from "./connection-state";
@@ -49,6 +72,36 @@ export interface Connection {
     sessionId?: string;
     connectedAt?: number;
     rejectReason?: string;
+    requestId?: string;
+    pairing?: InitiatorPairing;
+}
+
+/** Initiator-side state while the peer's challenge is being answered. */
+interface InitiatorPairing {
+    mode: PairingMode;
+    keys: EphemeralKeys;
+    nonce: string;
+    peerNonce: string;
+    peerPublicKey: string;
+    /** PIN or stored pairing secret the proof was keyed with. */
+    secret?: string;
+    attemptsLeft: number;
+    error?: string;
+    expiresAt: number;
+    timer: NodeJS.Timeout;
+}
+
+/** Responder-side state between sending a challenge and verifying the proof. */
+interface ResponderPairing {
+    request: ConnectRequest;
+    framer: MessageFramer;
+    mode: PairingMode;
+    keys: EphemeralKeys;
+    nonce: string;
+    pin?: string;
+    attemptsLeft: number;
+    expiresAt: number;
+    timer: NodeJS.Timeout;
 }
 
 export class ConnectionManager {
@@ -59,6 +112,7 @@ export class ConnectionManager {
 
     private socketToDeviceId = new Map<net.Socket, string>();
     private pendingSockets = new Set<net.Socket>();
+    private responderPairings = new Map<net.Socket, ResponderPairing>();
     private nextSequence = 0;
 
     private transferManager: TransferManager;
@@ -73,7 +127,9 @@ export class ConnectionManager {
         private readonly onEvent?: ProtocolEventListener,
         onTransferEvent?: TransferEventListener,
         onSyncEvent?: SyncEventListener,
-        onClipboardEvent?: ClipboardEventListener
+        onClipboardEvent?: ClipboardEventListener,
+        private readonly trustStore: TrustStore = new TrustStore(),
+        private readonly onPairingEvent?: PairingEventListener
     ) {
         /*
          * SyncEngine needs TransferManager to push files, but
@@ -133,6 +189,90 @@ export class ConnectionManager {
         }
 
         return peers;
+    }
+
+    getTrustedDevices() {
+        return this.trustStore.list();
+    }
+
+    /** Forget a paired device; it must pair with a PIN again next time. */
+    removeTrustedDevice(deviceId: string): boolean {
+        return this.trustStore.remove(deviceId);
+    }
+
+    /** PINs being shown here and PINs this device is being asked to enter. */
+    getPairingPrompts(): PairingPrompt[] {
+        const prompts: PairingPrompt[] = [];
+
+        for (const pending of this.responderPairings.values()) {
+            if (pending.mode === "pin") {
+                prompts.push({
+                    kind: "display",
+                    deviceId: pending.request.deviceId,
+                    deviceName: pending.request.deviceName,
+                    pin: pending.pin,
+                    attemptsLeft: pending.attemptsLeft,
+                    expiresAt: pending.expiresAt,
+                });
+            }
+        }
+
+        for (const [deviceId, connection] of this.connections) {
+            if (
+                connection.state === ConnectionState.AWAITING_PIN &&
+                connection.pairing
+            ) {
+                prompts.push({
+                    kind: "entry",
+                    deviceId,
+                    deviceName: connection.deviceName,
+                    attemptsLeft: connection.pairing.attemptsLeft,
+                    error: connection.pairing.error,
+                    expiresAt: connection.pairing.expiresAt,
+                });
+            }
+        }
+
+        return prompts;
+    }
+
+    /** Answer a pairing challenge with the PIN shown on the other device. */
+    submitPairingPin(deviceId: string, pin: string): void {
+        const connection = this.connections.get(deviceId);
+
+        if (
+            !connection ||
+            connection.state !== ConnectionState.AWAITING_PIN ||
+            !connection.pairing
+        ) {
+            throw new Error("No pairing is waiting for a PIN from this device");
+        }
+
+        if (!isWellFormedPin(pin)) {
+            throw new Error("The PIN is 6 digits");
+        }
+
+        connection.state = ConnectionState.CONNECTING;
+        connection.pairing.error = undefined;
+        this.sendPairProof(connection, pin);
+    }
+
+    cancelPairing(deviceId: string): boolean {
+        const connection = this.connections.get(deviceId);
+
+        if (connection?.pairing) {
+            this.failInitiatorPairing(connection, "Pairing cancelled");
+            return true;
+        }
+
+        for (const [socket, pending] of this.responderPairings) {
+            if (pending.request.deviceId === deviceId) {
+                this.failResponderPairing(socket, "Pairing cancelled");
+                return true;
+            }
+        }
+
+        return false;
     }
 
     publishClipboard(content: string): number {
@@ -206,7 +346,8 @@ export class ConnectionManager {
         if (
             existing &&
             (existing.state === ConnectionState.CONNECTED ||
-                existing.state === ConnectionState.CONNECTING)
+                existing.state === ConnectionState.CONNECTING ||
+                existing.state === ConnectionState.AWAITING_PIN)
         ) {
             console.log(
                 `[CONNECTION] Already connected or connecting to ${device.deviceName}`
@@ -305,10 +446,11 @@ export class ConnectionManager {
                             `[CONNECTION] TCP connection established with ${device.deviceName}`
                         );
 
-                        this.sendConnectRequest(
-                            socket,
-                            sessionId
-                        );
+                        connection.requestId =
+                            this.sendConnectRequest(
+                                socket,
+                                sessionId
+                            );
 
                         resolve();
                     }
@@ -413,6 +555,7 @@ export class ConnectionManager {
 
         const onPendingClose = () => {
             this.pendingSockets.delete(socket);
+            this.discardResponderPairing(socket, "Connection closed");
             const deviceId = this.socketToDeviceId.get(socket);
             if (deviceId) {
                 this.handleSocketTermination(deviceId, socket);
@@ -452,10 +595,20 @@ export class ConnectionManager {
         framer: MessageFramer,
         message: object
     ): void {
+        if ("type" in message && message.type === MessageType.PAIR_PROOF) {
+            this.handlePairProof(socket, message as PairProof);
+            return;
+        }
+
         if (!("type" in message) || message.type !== MessageType.CONNECT_REQUEST) {
             console.warn(
                 "[CONNECTION] Rejecting message before handshake on incoming socket"
             );
+            return;
+        }
+
+        if (this.responderPairings.has(socket)) {
+            // Already challenged; a second request must not reset the PIN.
             return;
         }
 
@@ -466,14 +619,16 @@ export class ConnectionManager {
     private sendConnectRequest(
         socket: net.Socket,
         sessionId: string
-    ): void {
+    ): string {
+        const requestId = randomUUID();
+
         const request: ConnectRequest = {
             type:
                 MessageType.CONNECT_REQUEST,
 
             version: PROTOCOL_VERSION,
 
-            requestId: randomUUID(),
+            requestId,
 
             messageId: randomUUID(),
 
@@ -499,6 +654,8 @@ export class ConnectionManager {
             "[CONNECTION] CONNECT_REQUEST sent"
         );
         this.emit("CONNECT_REQUEST_SENT", undefined, sessionId);
+
+        return requestId;
     }
 
     private handleMessage(
@@ -531,6 +688,27 @@ export class ConnectionManager {
         console.log(
             `[CONNECTION] Received message: ${messageType}`
         );
+
+        /*
+         * Nothing but the handshake is processed until the peer has
+         * authenticated: an unpaired device can't reach the transfer,
+         * sync or clipboard handlers.
+         */
+        const isHandshakeMessage =
+            messageType.startsWith("CONNECT_") ||
+            messageType.startsWith("PAIR_");
+
+        if (
+            !isHandshakeMessage &&
+            this.connections.get(peerDeviceId)?.state !==
+                ConnectionState.CONNECTED
+        ) {
+            console.warn(
+                `[CONNECTION] Dropping ${messageType} from unauthenticated peer ${peerDeviceId}`
+            );
+
+            return;
+        }
 
         /*
          * Route file-transfer messages
@@ -594,6 +772,22 @@ export class ConnectionManager {
                     socket,
                     new MessageFramer(),
                     message as ConnectRequest
+                );
+
+                break;
+
+            case MessageType.CONNECT_CHALLENGE:
+                this.handleConnectChallenge(
+                    peerDeviceId,
+                    message as ConnectChallenge
+                );
+
+                break;
+
+            case MessageType.PAIR_RETRY:
+                this.handlePairRetry(
+                    peerDeviceId,
+                    message as PairRetry
                 );
 
                 break;
@@ -673,7 +867,17 @@ export class ConnectionManager {
             return;
         }
 
-        // 4. Accept connection & establish session (echo the initiator's sessionId)
+        // 4. Authenticate the peer before accepting it.
+        this.beginPairing(socket, framer, request);
+    }
+
+    private acceptConnection(
+        socket: net.Socket,
+        framer: MessageFramer,
+        request: ConnectRequest,
+        proof: string
+    ): void {
+        // Echo the initiator's sessionId.
         const sessionId = request.sessionId;
         const response: ConnectAccept = {
             type: MessageType.CONNECT_ACCEPT,
@@ -685,6 +889,7 @@ export class ConnectionManager {
             sessionId,
             deviceName: this.deviceName,
             platform: process.platform,
+            proof,
             timestamp: Date.now(),
         };
 
@@ -741,6 +946,61 @@ export class ConnectionManager {
             return;
         }
 
+        const pairing = connection.pairing;
+
+        if (!pairing || !pairing.secret) {
+            this.failInitiatorPairing(
+                connection,
+                "Peer accepted without authenticating"
+            );
+            return;
+        }
+
+        const transcript = this.initiatorTranscript(connection, pairing);
+
+        if (
+            !proofsMatch(
+                computeProof(pairing.secret, "responder", transcript),
+                response.proof
+            )
+        ) {
+            this.failInitiatorPairing(
+                connection,
+                "Peer could not prove it knows the PIN"
+            );
+            return;
+        }
+
+        if (pairing.mode === "pin") {
+            this.trustStore.add(
+                peerDeviceId,
+                response.deviceName ?? connection.deviceName ?? peerDeviceId,
+                derivePairingSecret(
+                    pairing.keys.privateKey,
+                    pairing.peerPublicKey,
+                    transcript
+                )
+            );
+        } else {
+            this.trustStore.touch(peerDeviceId);
+        }
+
+        clearTimeout(pairing.timer);
+        connection.pairing = undefined;
+
+        this.emit(
+            "PAIRING_VERIFIED",
+            peerDeviceId,
+            connection.sessionId,
+            pairing.mode === "pin" ? "PIN confirmed" : "Trusted device recognised"
+        );
+        this.onPairingEvent?.({
+            type: "PAIRED",
+            deviceId: peerDeviceId,
+            deviceName: connection.deviceName,
+            timestamp: Date.now(),
+        });
+
         connection.state =
             ConnectionState.CONNECTED;
         connection.sessionId = response.sessionId;
@@ -773,6 +1033,28 @@ export class ConnectionManager {
             );
 
         const sessionId = connection?.sessionId;
+
+        if (connection?.pairing) {
+            clearTimeout(connection.pairing.timer);
+            connection.pairing = undefined;
+
+            this.emit(
+                "PAIRING_FAILED",
+                peerDeviceId,
+                sessionId,
+                response.reason
+            );
+            this.onPairingEvent?.({
+                type: "PAIRING_FAILED",
+                deviceId: peerDeviceId,
+                deviceName: connection.deviceName,
+                error:
+                    response.reason === "PAIRING_FAILED"
+                        ? "Too many wrong PIN attempts"
+                        : response.reason,
+                timestamp: Date.now(),
+            });
+        }
 
         if (connection) {
             connection.state =
@@ -808,6 +1090,16 @@ export class ConnectionManager {
     private handleSocketTermination(deviceId: string, socket?: net.Socket): void {
         const connection = this.connections.get(deviceId);
         if (connection && (!socket || connection.socket === socket)) {
+            if (connection.pairing) {
+                clearTimeout(connection.pairing.timer);
+                this.onPairingEvent?.({
+                    type: "PAIRING_FAILED",
+                    deviceId,
+                    deviceName: connection.deviceName,
+                    error: connection.rejectReason ?? "Connection closed",
+                    timestamp: Date.now(),
+                });
+            }
             this.connections.delete(deviceId);
             this.socketToDeviceId.delete(connection.socket);
             this.emit("CONNECTION_CLOSED", deviceId, connection.sessionId);
@@ -826,6 +1118,9 @@ export class ConnectionManager {
 
         console.log(`[CONNECTION] Disconnecting session with ${deviceId}`);
         connection.state = ConnectionState.CLOSING;
+        if (connection.pairing) {
+            clearTimeout(connection.pairing.timer);
+        }
         connection.socket.destroy();
         this.connections.delete(deviceId);
         this.socketToDeviceId.delete(connection.socket);
@@ -881,9 +1176,14 @@ export class ConnectionManager {
         );
     }
 
+    unlockTransfer(transferId: string, pin: string) {
+        return this.transferManager.unlockTransfer(transferId, pin);
+    }
+
     requestTransfer(
         deviceId: string,
-        filePath: string
+        filePath: string,
+        sensitive?: { pin: string }
     ) {
         const connection =
             this.connections.get(deviceId);
@@ -906,7 +1206,9 @@ export class ConnectionManager {
             connection.socket,
             this.deviceId,
             filePath,
-            deviceId
+            deviceId,
+            undefined,
+            sensitive
         );
     }
 
@@ -948,6 +1250,443 @@ export class ConnectionManager {
         );
     }
 
+    // ---------------------------------------------------------------
+    // Pairing — responder side
+    // ---------------------------------------------------------------
+
+    private beginPairing(
+        socket: net.Socket,
+        framer: MessageFramer,
+        request: ConnectRequest
+    ): void {
+        const mode: PairingMode = this.trustStore.isTrusted(request.deviceId)
+            ? "trusted"
+            : "pin";
+
+        const keys = generateEphemeralKeys();
+        const nonce = generateNonce();
+        const pin = mode === "pin" ? generatePin() : undefined;
+        const expiresAt = Date.now() + PAIRING_TIMEOUT_MS;
+
+        const timer = setTimeout(
+            () => this.failResponderPairing(socket, "Pairing timed out"),
+            PAIRING_TIMEOUT_MS
+        );
+
+        this.responderPairings.set(socket, {
+            request,
+            framer,
+            mode,
+            keys,
+            nonce,
+            pin,
+            attemptsLeft: PAIRING_MAX_ATTEMPTS,
+            expiresAt,
+            timer,
+        });
+
+        const challenge: ConnectChallenge = {
+            type: MessageType.CONNECT_CHALLENGE,
+            version: PROTOCOL_VERSION,
+            requestId: request.requestId,
+            messageId: randomUUID(),
+            sequence: this.nextSequence++,
+            deviceId: this.deviceId,
+            sessionId: request.sessionId,
+            deviceName: this.deviceName,
+            mode,
+            nonce,
+            publicKey: keys.publicKey,
+            timestamp: Date.now(),
+        };
+
+        this.sendMessage(socket, challenge);
+        this.emit(
+            "PAIRING_CHALLENGE_SENT",
+            request.deviceId,
+            request.sessionId,
+            mode === "pin" ? "New device — PIN required" : "Trusted device"
+        );
+
+        if (pin) {
+            this.onPairingEvent?.({
+                type: "PIN_DISPLAY",
+                deviceId: request.deviceId,
+                deviceName: request.deviceName,
+                pin,
+                attemptsLeft: PAIRING_MAX_ATTEMPTS,
+                expiresAt,
+                timestamp: Date.now(),
+            });
+        }
+    }
+
+    private handlePairProof(socket: net.Socket, message: PairProof): void {
+        const pending = this.responderPairings.get(socket);
+
+        if (!pending) {
+            return;
+        }
+
+        const { request } = pending;
+
+        const wellFormed =
+            message.deviceId === request.deviceId &&
+            typeof message.nonce === "string" &&
+            message.nonce.length > 0 &&
+            message.nonce.length <= 64 &&
+            typeof message.proof === "string" &&
+            isWellFormedPublicKey(message.publicKey);
+
+        const secret =
+            pending.mode === "pin"
+                ? pending.pin
+                : this.trustStore.getSecret(request.deviceId);
+
+        if (!wellFormed || !secret) {
+            this.failResponderPairing(
+                socket,
+                "Malformed pairing proof",
+                "AUTH_FAILED"
+            );
+            return;
+        }
+
+        const transcript: Transcript = {
+            initiatorId: request.deviceId,
+            responderId: this.deviceId,
+            initiatorNonce: message.nonce,
+            responderNonce: pending.nonce,
+            initiatorKey: message.publicKey,
+            responderKey: pending.keys.publicKey,
+        };
+
+        if (
+            !proofsMatch(
+                computeProof(secret, "initiator", transcript),
+                message.proof
+            )
+        ) {
+            pending.attemptsLeft--;
+
+            if (pending.mode === "pin" && pending.attemptsLeft > 0) {
+                const retry: PairRetry = {
+                    type: MessageType.PAIR_RETRY,
+                    version: PROTOCOL_VERSION,
+                    requestId: request.requestId,
+                    messageId: randomUUID(),
+                    sequence: this.nextSequence++,
+                    deviceId: this.deviceId,
+                    attemptsLeft: pending.attemptsLeft,
+                    timestamp: Date.now(),
+                };
+
+                this.sendMessage(socket, retry);
+                this.onPairingEvent?.({
+                    type: "PIN_DISPLAY",
+                    deviceId: request.deviceId,
+                    deviceName: request.deviceName,
+                    pin: pending.pin,
+                    attemptsLeft: pending.attemptsLeft,
+                    error: "The other device entered the wrong PIN",
+                    expiresAt: pending.expiresAt,
+                    timestamp: Date.now(),
+                });
+                return;
+            }
+
+            this.failResponderPairing(
+                socket,
+                pending.mode === "pin"
+                    ? "Too many wrong PIN attempts"
+                    : "Peer failed to prove it is the paired device",
+                pending.mode === "pin" ? "PAIRING_FAILED" : "AUTH_FAILED"
+            );
+            return;
+        }
+
+        clearTimeout(pending.timer);
+        this.responderPairings.delete(socket);
+
+        if (pending.mode === "pin") {
+            this.trustStore.add(
+                request.deviceId,
+                request.deviceName ?? request.deviceId,
+                derivePairingSecret(
+                    pending.keys.privateKey,
+                    message.publicKey,
+                    transcript
+                )
+            );
+        } else {
+            this.trustStore.touch(request.deviceId);
+        }
+
+        this.emit(
+            "PAIRING_VERIFIED",
+            request.deviceId,
+            request.sessionId,
+            pending.mode === "pin" ? "PIN confirmed" : "Trusted device recognised"
+        );
+        this.onPairingEvent?.({
+            type: "PAIRED",
+            deviceId: request.deviceId,
+            deviceName: request.deviceName,
+            timestamp: Date.now(),
+        });
+
+        this.acceptConnection(
+            socket,
+            pending.framer,
+            request,
+            computeProof(secret, "responder", transcript)
+        );
+    }
+
+    private failResponderPairing(
+        socket: net.Socket,
+        reason: string,
+        rejectReason: ConnectRejectReason = "PAIRING_FAILED"
+    ): void {
+        const pending = this.responderPairings.get(socket);
+
+        if (!pending) {
+            return;
+        }
+
+        this.discardResponderPairing(socket, reason);
+        this.sendConnectReject(
+            socket,
+            pending.request.requestId,
+            pending.request.deviceId,
+            rejectReason
+        );
+        this.pendingSockets.delete(socket);
+        socket.end();
+    }
+
+    /** Drop pairing state and tell the UI; does not touch the socket. */
+    private discardResponderPairing(
+        socket: net.Socket,
+        reason: string
+    ): void {
+        const pending = this.responderPairings.get(socket);
+
+        if (!pending) {
+            return;
+        }
+
+        clearTimeout(pending.timer);
+        this.responderPairings.delete(socket);
+
+        this.emit(
+            "PAIRING_FAILED",
+            pending.request.deviceId,
+            pending.request.sessionId,
+            reason
+        );
+        this.onPairingEvent?.({
+            type: "PAIRING_FAILED",
+            deviceId: pending.request.deviceId,
+            deviceName: pending.request.deviceName,
+            error: reason,
+            timestamp: Date.now(),
+        });
+    }
+
+    // ---------------------------------------------------------------
+    // Pairing — initiator side
+    // ---------------------------------------------------------------
+
+    private handleConnectChallenge(
+        peerDeviceId: string,
+        challenge: ConnectChallenge
+    ): void {
+        const connection = this.connections.get(peerDeviceId);
+
+        if (
+            !connection ||
+            connection.state !== ConnectionState.CONNECTING ||
+            connection.pairing
+        ) {
+            return;
+        }
+
+        if (
+            challenge.requestId !== connection.requestId ||
+            challenge.deviceId !== peerDeviceId ||
+            (challenge.mode !== "pin" && challenge.mode !== "trusted") ||
+            typeof challenge.nonce !== "string" ||
+            challenge.nonce.length === 0 ||
+            challenge.nonce.length > 64 ||
+            !isWellFormedPublicKey(challenge.publicKey)
+        ) {
+            this.emit(
+                "MALFORMED_MESSAGE",
+                peerDeviceId,
+                connection.sessionId,
+                "Invalid CONNECT_CHALLENGE"
+            );
+            connection.state = ConnectionState.FAILED;
+            connection.rejectReason = "INVALID_CONNECT_CHALLENGE";
+            connection.socket.destroy();
+            return;
+        }
+
+        const expiresAt = Date.now() + PAIRING_TIMEOUT_MS;
+
+        connection.pairing = {
+            mode: challenge.mode,
+            keys: generateEphemeralKeys(),
+            nonce: generateNonce(),
+            peerNonce: challenge.nonce,
+            peerPublicKey: challenge.publicKey,
+            attemptsLeft: PAIRING_MAX_ATTEMPTS,
+            expiresAt,
+            timer: setTimeout(
+                () =>
+                    this.failInitiatorPairing(
+                        connection,
+                        "Pairing timed out"
+                    ),
+                PAIRING_TIMEOUT_MS
+            ),
+        };
+
+        this.emit(
+            "PAIRING_CHALLENGE_RECEIVED",
+            peerDeviceId,
+            connection.sessionId,
+            challenge.mode === "pin" ? "PIN required" : "Trusted device"
+        );
+
+        if (challenge.mode === "trusted") {
+            const secret = this.trustStore.getSecret(peerDeviceId);
+
+            if (!secret) {
+                this.failInitiatorPairing(
+                    connection,
+                    "That device remembers this one as paired, but this device has no pairing record. Remove it from the other device's trusted list and pair again."
+                );
+                return;
+            }
+
+            this.sendPairProof(connection, secret);
+            return;
+        }
+
+        connection.state = ConnectionState.AWAITING_PIN;
+        this.onPairingEvent?.({
+            type: "PIN_ENTRY",
+            deviceId: peerDeviceId,
+            deviceName: connection.deviceName,
+            attemptsLeft: PAIRING_MAX_ATTEMPTS,
+            expiresAt,
+            timestamp: Date.now(),
+        });
+    }
+
+    private handlePairRetry(peerDeviceId: string, retry: PairRetry): void {
+        const connection = this.connections.get(peerDeviceId);
+
+        if (
+            !connection?.pairing ||
+            connection.pairing.mode !== "pin" ||
+            typeof retry.attemptsLeft !== "number"
+        ) {
+            return;
+        }
+
+        connection.state = ConnectionState.AWAITING_PIN;
+        connection.pairing.secret = undefined;
+        connection.pairing.attemptsLeft = retry.attemptsLeft;
+        connection.pairing.error = "Incorrect PIN";
+
+        this.onPairingEvent?.({
+            type: "PIN_ENTRY",
+            deviceId: peerDeviceId,
+            deviceName: connection.deviceName,
+            attemptsLeft: retry.attemptsLeft,
+            error: "Incorrect PIN",
+            expiresAt: connection.pairing.expiresAt,
+            timestamp: Date.now(),
+        });
+    }
+
+    private initiatorTranscript(
+        connection: Connection,
+        pairing: InitiatorPairing
+    ): Transcript {
+        return {
+            initiatorId: this.deviceId,
+            responderId: connection.deviceId ?? "",
+            initiatorNonce: pairing.nonce,
+            responderNonce: pairing.peerNonce,
+            initiatorKey: pairing.keys.publicKey,
+            responderKey: pairing.peerPublicKey,
+        };
+    }
+
+    private sendPairProof(connection: Connection, secret: string): void {
+        const pairing = connection.pairing;
+
+        if (!pairing || !connection.requestId || !connection.sessionId) {
+            return;
+        }
+
+        pairing.secret = secret;
+
+        const proof: PairProof = {
+            type: MessageType.PAIR_PROOF,
+            version: PROTOCOL_VERSION,
+            requestId: connection.requestId,
+            messageId: randomUUID(),
+            sequence: this.nextSequence++,
+            deviceId: this.deviceId,
+            sessionId: connection.sessionId,
+            nonce: pairing.nonce,
+            publicKey: pairing.keys.publicKey,
+            proof: computeProof(
+                secret,
+                "initiator",
+                this.initiatorTranscript(connection, pairing)
+            ),
+            timestamp: Date.now(),
+        };
+
+        this.sendMessage(connection.socket, proof);
+        this.emit("PAIRING_PROOF_SENT", connection.deviceId, connection.sessionId);
+    }
+
+    private failInitiatorPairing(
+        connection: Connection,
+        reason: string
+    ): void {
+        if (connection.pairing) {
+            clearTimeout(connection.pairing.timer);
+            connection.pairing = undefined;
+        }
+
+        connection.state = ConnectionState.FAILED;
+        connection.rejectReason = reason;
+
+        this.emit(
+            "PAIRING_FAILED",
+            connection.deviceId,
+            connection.sessionId,
+            reason
+        );
+        this.onPairingEvent?.({
+            type: "PAIRING_FAILED",
+            deviceId: connection.deviceId ?? "",
+            deviceName: connection.deviceName,
+            error: reason,
+            timestamp: Date.now(),
+        });
+
+        connection.socket.destroy();
+    }
+
     private emit(
         type: ProtocolEventType,
         deviceId?: string,
@@ -958,7 +1697,12 @@ export class ConnectionManager {
             id: randomUUID(),
             timestamp: Date.now(),
             type,
-            layer: type === "MALFORMED_MESSAGE" ? "framing" : "connection",
+            layer:
+                type === "MALFORMED_MESSAGE"
+                    ? "framing"
+                    : type.startsWith("PAIRING_")
+                      ? "authentication"
+                      : "connection",
             deviceId,
             sessionId,
             detail,
