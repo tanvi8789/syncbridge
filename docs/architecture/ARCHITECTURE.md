@@ -73,7 +73,8 @@ Responsible for:
 
 - UDP Device Discovery
 - TCP Connections
-- File Transfer
+- Device Pairing and Trust (PIN pairing, trusted-device store)
+- File Transfer (including PIN-encrypted sensitive files)
 - Folder Synchronization
 - Protocol Handling
 - Checksum Verification
@@ -177,9 +178,12 @@ Completion
 
 # Current Status
 
-Current implementation includes discovery, connection lifecycle management, and
-verified file transfer. Folder synchronization, persistence, encryption, and
-cross-network discovery remain future work.
+Current implementation includes discovery, PIN-based device pairing with a
+persisted trusted-device list, connection lifecycle management, verified file
+transfer (with optional PIN-encrypted "sensitive" files), folder
+synchronization, clipboard sharing, and SQLite transfer history. Encryption of
+all traffic (not just sensitive files), cross-network discovery and packaging
+remain future work. See `PROJECT_OVERVIEW.md` for the full picture.
 
 
 
@@ -219,3 +223,42 @@ Reason:
 - Better performance
 - Lower memory usage
 - Simpler chunking
+
+---
+
+## ADR-004
+
+Devices must pair before they can exchange anything but the handshake.
+
+Decision:
+
+- A new device is paired once with a 6-digit PIN shown on one screen and typed
+  on the other. The PIN never crosses the network: both sides send an HMAC over
+  an ephemeral X25519 key exchange transcript, keyed with the PIN.
+- A successful pairing stores an HKDF-derived secret on both sides; later
+  connections prove knowledge of it automatically.
+- Until a connection is authenticated, `FILE_`, `SYNC_` and `CLIPBOARD_`
+  messages are dropped.
+
+Reason:
+
+- Simple for users, and no certificate infrastructure on a LAN
+- Binds the key exchange to the PIN, so an active man-in-the-middle needs the PIN
+- Trade-off: not a full PAKE, so a recorded pairing allows offline PIN guessing
+  (which does not reveal the stored secret)
+
+---
+
+## ADR-005
+
+Sensitive files are encrypted by the sender with a key derived from a PIN the
+two people share out of band.
+
+Reason:
+
+- A PIN check in the UI alone would still leave the file readable on the wire
+  and on disk; encrypting makes the PIN the actual key
+- The receiver stores only ciphertext until the PIN is entered
+- The file name is inside the ciphertext
+- Trade-off: the PIN's strength is the file's strength, and only sensitive
+  files get this protection

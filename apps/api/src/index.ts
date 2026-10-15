@@ -8,6 +8,7 @@ import type {
     TransferEvent,
     SyncEvent,
     ClipboardEvent,
+    PairingEvent,
 } from "networking";
 
 const API_HOST = "127.0.0.1";
@@ -162,12 +163,20 @@ async function start(): Promise<void> {
                             );
                         };
 
+                        const sendPairingEvent = (event: PairingEvent) => {
+                            response.write(
+                                `event: pairing-event\ndata: ${JSON.stringify(event)}\n\n`
+                            );
+                        };
+
                         networking.on("protocol-event", sendEvent);
+                        networking.on("pairing-event", sendPairingEvent);
                         networking.on("transfer-event", sendTransferEvent);
                         networking.on("sync-event", sendSyncEvent);
                         networking.on("clipboard-event", sendClipboardEvent);
                         request.on("close", () => {
                             networking.off("protocol-event", sendEvent);
+                            networking.off("pairing-event", sendPairingEvent);
                             networking.off("transfer-event", sendTransferEvent);
                             networking.off("sync-event", sendSyncEvent);
                             networking.off("clipboard-event", sendClipboardEvent);
@@ -446,11 +455,33 @@ async function start(): Promise<void> {
                                 return;
                             }
 
+                            const sensitive =
+                                parsed.sensitive === true;
+
+                            if (
+                                sensitive &&
+                                typeof parsed.pin !== "string"
+                            ) {
+                                response.writeHead(400);
+
+                                response.end(
+                                    JSON.stringify({
+                                        error:
+                                            "A sensitive file needs a PIN",
+                                    })
+                                );
+
+                                return;
+                            }
+
                             const transferId =
                                 networking
                                     .requestFileTransfer(
                                         parsed.deviceId,
-                                        parsed.filePath
+                                        parsed.filePath,
+                                        sensitive
+                                            ? { pin: parsed.pin }
+                                            : undefined
                                     );
 
                             if (!transferId) {
@@ -1003,6 +1034,136 @@ async function start(): Promise<void> {
                                 })
                             );
                         }
+
+                        return;
+                    }
+
+                    // -------------------------
+                    // Unlock a received sensitive file
+                    // -------------------------
+
+                    const unlockMatch =
+                        request.method === "POST" && request.url
+                            ? request.url.match(
+                                  /^\/api\/transfers\/([^/]+)\/unlock$/
+                              )
+                            : null;
+
+                    if (unlockMatch) {
+                        try {
+                            const parsed = JSON.parse(
+                                await readBody(request)
+                            );
+
+                            if (typeof parsed.pin !== "string") {
+                                throw new Error("pin is required");
+                            }
+
+                            const transfer = networking.unlockTransfer(
+                                unlockMatch[1],
+                                parsed.pin
+                            );
+
+                            response.writeHead(200);
+                            response.end(JSON.stringify(transfer));
+                        } catch (error) {
+                            response.writeHead(400);
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Failed to unlock file",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    // -------------------------
+                    // Pairing & trusted devices
+                    // -------------------------
+
+                    if (
+                        request.method === "GET" &&
+                        request.url === "/api/pairing"
+                    ) {
+                        response.writeHead(200);
+                        response.end(
+                            JSON.stringify({
+                                prompts: networking.getPairingPrompts(),
+                                trusted: networking.getTrustedDevices(),
+                            })
+                        );
+
+                        return;
+                    }
+
+                    if (
+                        request.method === "POST" &&
+                        (request.url === "/api/pairing/pin" ||
+                            request.url === "/api/pairing/cancel")
+                    ) {
+                        try {
+                            const parsed = JSON.parse(
+                                await readBody(request)
+                            );
+
+                            if (typeof parsed.deviceId !== "string") {
+                                throw new Error("deviceId is required");
+                            }
+
+                            if (request.url === "/api/pairing/pin") {
+                                if (typeof parsed.pin !== "string") {
+                                    throw new Error("pin is required");
+                                }
+
+                                networking.submitPairingPin(
+                                    parsed.deviceId,
+                                    parsed.pin
+                                );
+                            } else {
+                                networking.cancelPairing(parsed.deviceId);
+                            }
+
+                            response.writeHead(200);
+                            response.end(
+                                JSON.stringify({ status: "ok" })
+                            );
+                        } catch (error) {
+                            response.writeHead(400);
+                            response.end(
+                                JSON.stringify({
+                                    error:
+                                        error instanceof Error
+                                            ? error.message
+                                            : "Pairing request failed",
+                                })
+                            );
+                        }
+
+                        return;
+                    }
+
+                    const trustedMatch =
+                        request.method === "DELETE" && request.url
+                            ? request.url.match(
+                                  /^\/api\/trusted-devices\/([^/]+)$/
+                              )
+                            : null;
+
+                    if (trustedMatch) {
+                        const removed = networking.removeTrustedDevice(
+                            decodeURIComponent(trustedMatch[1])
+                        );
+
+                        response.writeHead(removed ? 200 : 404);
+                        response.end(
+                            JSON.stringify({
+                                status: removed ? "removed" : "not_found",
+                            })
+                        );
 
                         return;
                     }

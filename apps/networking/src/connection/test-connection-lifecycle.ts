@@ -6,6 +6,15 @@ import { encodeMessage, MessageFramer } from "./framing";
 import { ConnectionManager } from "./connection-manager";
 import { ConnectionState } from "./connection-state";
 import type { ConnectAccept, ConnectReject } from "../connection-messages";
+import type { ConnectChallenge, PairingEvent } from "../pairing/pairing-messages";
+import { TrustStore } from "../pairing/trust-store";
+import {
+    computeProof,
+    generateEphemeralKeys,
+    generateNonce,
+} from "../pairing/pairing-crypto";
+import os from "node:os";
+import path from "node:path";
 
 const TEST_PORT = 41299;
 const SERVER_DEVICE_ID = "server-" + randomUUID().slice(0, 8);
@@ -43,10 +52,21 @@ async function runTests() {
     console.log("   SyncBridge Connection & Session Lifecycle Test");
     console.log("==================================================");
 
+    const shownPins: string[] = [];
+
     const connectionManager = new ConnectionManager(
         SERVER_DEVICE_ID,
         "Test Server Node",
-        TEST_PORT
+        TEST_PORT,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        new TrustStore(path.join(os.tmpdir(), `sb-lifecycle-${randomUUID()}.json`)),
+        (event: PairingEvent) => {
+            if (event.type === "PIN_DISPLAY" && event.pin) shownPins.push(event.pin);
+        }
     );
 
     // Create and start TCP server on TEST_PORT
@@ -73,15 +93,50 @@ async function runTests() {
 
         await new Promise<void>((resolve) => socket1.connect(TEST_PORT, "127.0.0.1", resolve));
 
+        const requestId1 = randomUUID();
+        const sessionId1 = randomUUID();
+
         sendJson(socket1, {
             type: MessageType.CONNECT_REQUEST,
             version: "1.0.0",
-            requestId: randomUUID(),
+            requestId: requestId1,
             messageId: randomUUID(),
             sequence: 0,
             deviceId: client1Id,
+            sessionId: sessionId1,
             deviceName: "Client One",
             platform: "darwin",
+            timestamp: Date.now(),
+        });
+
+        // A new device is challenged and must prove it knows the PIN.
+        const challenge = (await waitForMessage(socket1, framer1)) as ConnectChallenge;
+        if (challenge.type !== MessageType.CONNECT_CHALLENGE || challenge.mode !== "pin") {
+            throw new Error(`Test 1 Failed: Expected a PIN challenge, got: ${JSON.stringify(challenge)}`);
+        }
+        console.log("✓ New device is challenged for a PIN before being accepted");
+        passedTests++;
+
+        const keys = generateEphemeralKeys();
+        const nonce = generateNonce();
+        sendJson(socket1, {
+            type: MessageType.PAIR_PROOF,
+            version: "1.0.0",
+            requestId: requestId1,
+            messageId: randomUUID(),
+            sequence: 1,
+            deviceId: client1Id,
+            sessionId: sessionId1,
+            nonce,
+            publicKey: keys.publicKey,
+            proof: computeProof(shownPins[0], "initiator", {
+                initiatorId: client1Id,
+                responderId: SERVER_DEVICE_ID,
+                initiatorNonce: nonce,
+                responderNonce: challenge.nonce,
+                initiatorKey: keys.publicKey,
+                responderKey: challenge.publicKey,
+            }),
             timestamp: Date.now(),
         });
 
@@ -120,6 +175,7 @@ async function runTests() {
             messageId: randomUUID(),
             sequence: 1,
             deviceId: client1Id, // Same device ID as client1!
+            sessionId: randomUUID(),
             deviceName: "Duplicate Client",
             platform: "darwin",
             timestamp: Date.now(),
@@ -151,6 +207,7 @@ async function runTests() {
             messageId: randomUUID(),
             sequence: 2,
             deviceId: clientVersionMismatchId,
+            sessionId: randomUUID(),
             timestamp: Date.now(),
         });
 
@@ -179,6 +236,7 @@ async function runTests() {
             messageId: randomUUID(),
             sequence: 3,
             deviceId: SERVER_DEVICE_ID, // Connecting with server's own device ID
+            sessionId: randomUUID(),
             timestamp: Date.now(),
         });
 
@@ -210,7 +268,7 @@ async function runTests() {
         passedTests++;
 
         console.log("\n==================================================");
-        console.log(`   ALL ${passedTests}/5 TESTS PASSED SUCCESSFULLY!`);
+        console.log(`   ALL ${passedTests}/6 TESTS PASSED SUCCESSFULLY!`);
         console.log("==================================================");
     } finally {
         server.close();

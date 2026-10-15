@@ -7,6 +7,8 @@ import {
     ConnectionManager,
 } from "../connection/connection-manager";
 
+import { autoPairingListener, testTrustStore } from "../pairing/test-support";
+
 import {
     TcpServer,
 } from "../connection/tcp-server";
@@ -74,7 +76,19 @@ async function main(): Promise<void> {
      */
     const serverConnection =
         new ConnectionManager(
-            serverDeviceId
+            serverDeviceId,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            testTrustStore(),
+            autoPairingListener(
+                serverDeviceId,
+                () => clientConnection
+            )
         );
 
     /*
@@ -102,9 +116,17 @@ async function main(): Promise<void> {
      * This side will use the real
      * TransferSender.
      */
-    const clientConnection =
+    const clientConnection: ConnectionManager =
         new ConnectionManager(
-            clientDeviceId
+            clientDeviceId,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            testTrustStore()
         );
 
     /*

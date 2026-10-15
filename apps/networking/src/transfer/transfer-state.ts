@@ -61,5 +61,16 @@ export interface Transfer {
     /** Threads this transfer back to the connection session it happened over. */
     sessionId?: string;
 
+    /**
+     * Sensitive transfers are encrypted with a PIN the two people
+     * share. The received file stays encrypted (`locked`) until the
+     * PIN is entered on the receiving device.
+     */
+    sensitive?: boolean;
+    locked?: boolean;
+
+    /** Sender-side only: the real name, which is never sent in the clear. */
+    originalFileName?: string;
+
     state: TransferState;
 }

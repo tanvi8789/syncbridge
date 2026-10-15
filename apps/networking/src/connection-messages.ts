@@ -23,6 +23,12 @@ export interface ConnectAccept {
     sessionId: string;
     deviceName?: string;
     platform?: string;
+
+    /**
+     * Responder's counter-proof that it also knew the PIN / pairing
+     * secret. The initiator refuses an accept that lacks a valid one.
+     */
+    proof?: string;
     timestamp: number;
 }
 
@@ -32,6 +38,8 @@ export type ConnectRejectReason =
     | "SELF_CONNECTION"
     | "CONNECTION_TIMEOUT"
     | "BUSY"
+    | "PAIRING_FAILED"
+    | "AUTH_FAILED"
     | "UNKNOWN_ERROR";
 
 export interface ConnectReject {

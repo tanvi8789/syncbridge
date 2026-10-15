@@ -45,8 +45,9 @@ transfer utility.
 | Shared clipboard across connected peers | ✅ Working |
 | Drag-and-drop files onto the window to send | ✅ Working |
 | Adaptive discovery cadence (backs off once connected) | ✅ Working |
-| Device pairing / trust / authentication | ❌ Not built (auto-accept today) |
-| Encryption of data in transit | ❌ Not built |
+| Device pairing: 6-digit PIN, then remembered as a trusted device | ✅ Working |
+| Sensitive files: PIN-encrypted (AES-256-GCM), locked until the receiver enters the PIN | ✅ Working |
+| Encryption of *all* traffic in transit | ❌ Not built (only sensitive files are encrypted) |
 | Persistent transfer history (SQLite) | ✅ Working |
 | Analytics dashboard (throughput / RTT / retries) | ✅ Working |
 | Packaged installers | ❌ Not built |
@@ -90,9 +91,8 @@ protocol work is built directly on Node's standard library:
 - **No database yet** — everything is in memory except device identity and sync
   baselines, which are plain JSON files under `~/.syncbridge/` and
   `~/SyncBridge/sync-state/`.
-- **No Spring Boot / MySQL** — the original roadmap planned them; the project
-  converged on a Node control plane instead. Treat roadmap mentions of Spring
-  Boot as historical.
+- **No Spring Boot / MySQL** — the original plan included them; the project
+  converged on a Node control plane instead.
 - **`packages/protocol/`** exists as scaffolding from Phase 0 but is **not
   imported by any running code**. The live message definitions are in
   `apps/networking/src/`. Mention it as legacy if asked.
@@ -149,10 +149,15 @@ capped at **16 MiB**; anything larger, or any invalid JSON, is reported as a
 
 **Connection (TCP, framed)**
 - `CONNECT_REQUEST` — `requestId`, `messageId`, `sequence`, `sessionId`, device info
-- `CONNECT_ACCEPT` — confirms the session
+- `CONNECT_CHALLENGE` — the responder asks the initiator to prove itself
+  (`mode: "pin"` for a new device, `"trusted"` for a paired one), with a nonce
+  and an ephemeral X25519 public key
+- `PAIR_PROOF` — the initiator's nonce, public key and an HMAC proof
+- `PAIR_RETRY` — wrong PIN; says how many attempts remain
+- `CONNECT_ACCEPT` — confirms the session and carries the responder's own proof
 - `CONNECT_REJECT` — with a typed reason: `DUPLICATE_CONNECTION`,
   `VERSION_MISMATCH`, `SELF_CONNECTION`, `CONNECTION_TIMEOUT`, `BUSY`,
-  `UNKNOWN_ERROR`
+  `PAIRING_FAILED`, `AUTH_FAILED`, `UNKNOWN_ERROR`
 
 **File transfer (TCP, framed — prefix `FILE_`)**
 - `FILE_TRANSFER_REQUEST` / `FILE_TRANSFER_ACCEPT` / `FILE_TRANSFER_REJECT`
@@ -258,13 +263,18 @@ history — a UI opened after a transfer finished would otherwise see nothing.
 |---|---|---|
 | GET | `/health` | Liveness |
 | GET | `/api/device` | This device's ID, name, platform |
-| GET | `/api/events` | **SSE** stream of protocol / transfer / sync events |
+| GET | `/api/events` | **SSE** stream of protocol / transfer / sync / clipboard / pairing events |
 | GET | `/api/devices` | Discovered peers |
 | GET | `/api/connections` | Active connections |
 | POST | `/api/connections` | Connect to a device |
 | POST | `/api/connections/disconnect`, DELETE `/api/connections` | Disconnect |
 | GET | `/api/transfers` | All transfers (sent + received) |
-| POST | `/api/transfers` | Start a transfer |
+| POST | `/api/transfers` | Start a transfer; `sensitive: true` + `pin` encrypts it |
+| POST | `/api/transfers/:id/unlock` | Decrypt a received sensitive file with its PIN |
+| GET | `/api/pairing` | PINs to show / enter right now, plus the trusted-device list |
+| POST | `/api/pairing/pin` | Submit the PIN shown on the other device |
+| POST | `/api/pairing/cancel` | Abandon a pairing in progress |
+| DELETE | `/api/trusted-devices/:id` | Forget a paired device |
 | POST | `/api/transfers/:id/pause\|resume\|cancel` | Transfer control |
 | GET | `/api/sync-pairs` | List sync pairs |
 | POST | `/api/sync-pairs` | Create a sync pair |
@@ -307,20 +317,43 @@ dev origins, request bodies capped at 1 MiB.
    advertised IP on `:41236`, with a 5 s timeout.
 3. It sends a framed `CONNECT_REQUEST` (`requestId`, `messageId`, monotonic
    `sequence`, `sessionId`, device info).
-4. The receiving side validates the message, checks for duplicates and version
-   mismatch, and replies `CONNECT_ACCEPT` or a `CONNECT_REJECT` with a typed
-   reason.
-5. Both sides record the connection as `CONNECTED` and keep the socket open.
-   Socket errors, `close`, and `end` all funnel into one termination handler
-   that cleans up both the `deviceId → Connection` and `socket → deviceId` maps.
+4. The receiving side validates the message and checks for duplicates and
+   version mismatch (replying `CONNECT_REJECT` with a typed reason if needed).
+5. **Pairing** (see below) — the receiver sends a `CONNECT_CHALLENGE`; nothing
+   else is accepted from the peer until it answers correctly.
+6. On success the receiver replies `CONNECT_ACCEPT` (with its own proof, which
+   the initiator verifies). Both sides record the connection as `CONNECTED` and
+   keep the socket open. Socket errors, `close`, and `end` all funnel into one
+   termination handler that cleans up both the `deviceId → Connection` and
+   `socket → deviceId` maps.
 
-> ⚠️ There is **no authentication step** today. Any device on the LAN that
-> completes the handshake is trusted. This is the single biggest known gap.
+#### Pairing and trust
+- **First contact:** the device being connected *to* generates a random 6-digit
+  PIN and shows it on screen; the person types it on the connecting device.
+  Both sides exchange a nonce and an ephemeral X25519 key, then each sends
+  `HMAC-SHA256(PIN, role | both device IDs | both nonces | both public keys)`.
+  The PIN itself never crosses the network, and because the public keys are
+  inside the hash, an active man-in-the-middle cannot produce a valid proof.
+- **Limit:** 3 wrong PINs abort the pairing; an unanswered pairing expires
+  after 120 s.
+- **After pairing:** both sides derive a 32-byte secret with HKDF from the ECDH
+  result and store it in `~/.syncbridge/trusted-devices.json` (mode `0600`).
+  Later connections prove knowledge of that secret automatically — no PIN.
+- **Forgetting a device** (UI: *Paired devices → Forget*) deletes the secret;
+  the next connection needs a PIN again.
+- **Enforcement:** until a connection is `CONNECTED`, `FILE_`, `SYNC_` and
+  `CLIPBOARD_` messages from the peer are dropped, so an unpaired device cannot
+  reach any handler.
+- **Honest limit:** this is a PIN-authenticated key exchange, not a full PAKE.
+  Someone who records a pairing on the wire could brute-force the 6-digit PIN
+  offline, but that only reveals the PIN — the stored secret depends on the
+  ECDH key, which they cannot compute. Active attackers get 3 online guesses.
 
 ### C. File transfer
 1. Sender: `FILE_TRANSFER_REQUEST` with `transferId` (UUID) and filename.
 2. Receiver: registers a placeholder transfer so it appears in the UI
-   immediately, then **auto-accepts** with `FILE_TRANSFER_ACCEPT`.
+   immediately, then **auto-accepts** with `FILE_TRANSFER_ACCEPT` (only paired
+   devices ever get this far).
 3. Sender reads the file, computes its SHA-256, and sends `FILE_METADATA`
    (size, `totalChunks`, checksum).
 4. Sender loops the file in 64 KiB chunks, Base64-encoding each into a
@@ -374,8 +407,8 @@ dev origins, request bodies capped at 1 MiB.
 - `ProtocolTimeline` (`SessionReplay`) fetches
   `/api/sessions/:id/timeline` and steps through the correlated event list stage
   by stage: discovery → connection → authentication → metadata → chunk-transfer
-  → verification → completion (+ sync). The *authentication* stage is
-  deliberately rendered as empty, honestly reflecting that it isn't implemented.
+  → verification → completion (+ sync). The *authentication* stage shows the
+  pairing challenge, proof and verification events.
 
 ---
 
@@ -391,7 +424,8 @@ syncbridge/
 │  │     ├─ protocol-event.ts      Protocol event vocabulary
 │  │     ├─ discovery/             socket · device-identity · device-registry · discovery
 │  │     ├─ connection/            framing · tcp-server · connection-manager · connection-state
-│  │     ├─ transfer/              transfer-manager · -sender · -receiver · -messages · -state · -config · -event
+│  │     ├─ pairing/               pairing-crypto · trust-store · pairing-messages · test-pairing
+│  │     ├─ transfer/              transfer-manager · -sender · -receiver · -messages · -state · -config · -event · sensitive-crypto
 │  │     ├─ sync/                  sync-engine · sync-scanner · sync-state · sync-messages · sync-event
 │  │     ├─ clipboard/             clipboard-manager · clipboard-messages · clipboard-event
 │  │     ├─ history/               history-store   (SQLite: transfers, sessions, devices)
@@ -401,6 +435,7 @@ syncbridge/
 │     ├─ electron/             main.ts (window, IPC) · preload.cts (contextBridge)
 │     └─ src/                  App.tsx · TransferVisualizer.tsx · ProtocolTimeline.tsx
 │                                AnalyticsDashboard.tsx · TransferHistory.tsx · charts.tsx
+│                                PairingDialog.tsx · PinDialog.tsx · TrustedDevices.tsx
 │                                api.ts · explain.ts · session-export.ts
 │                                sync-activity.ts · format.ts
 ├─ packages/protocol/          ← Phase-0 scaffold, currently unused
@@ -408,8 +443,8 @@ syncbridge/
 │  ├─ architecture/ARCHITECTURE.md
 │  ├─ protocol/messages.md
 │  ├─ patent/PRIOR_ART.md
-│  └─ PROJECT_OVERVIEW.md      ← this file
-├─ roadmap.md · changelog.md · README.md
+│  (PROJECT_OVERVIEW.md at the repo root is this file)
+├─ README.md
 └─ package.json                ← npm workspaces root
 ```
 
@@ -492,15 +527,16 @@ registry 30 s later.
 - The roles of `requestId` (correlates request↔response), `messageId`
   (identifies one message), `sequence` (monotonic ordering), `sessionId`
   (issued on accept, threads everything downstream together)
-- The connection state machine: `DISCONNECTED → CONNECTING → CONNECTED /
-  FAILED / REJECTED`
+- The connection state machine: `DISCONNECTED → CONNECTING → (AWAITING_PIN) →
+  CONNECTED / FAILED / REJECTED`
 - **Prefix-based message routing** — `FILE_*` → TransferManager, `SYNC_*` →
   SyncEngine, `CONNECT_*` handled locally. One socket, three subsystems, no
   coupling.
 - Dual bookkeeping (`deviceId → Connection` and `socket → deviceId`) and why
   socket teardown must clean both
-- **Honest gap:** no authentication. Any LAN device that completes the
-  handshake is trusted.
+- **Pairing:** the PIN challenge/proof exchange, the trusted-device store, and
+  why unpaired peers can't reach the transfer handlers. Be ready to state the
+  PIN-vs-PAKE limit (see §5B).
 
 **Demo:** Run `test-connection-lifecycle.ts`; show a successful handshake, then
 a duplicate-connection reject. Optionally send a deliberately bad frame and show
@@ -626,8 +662,10 @@ full protocol timeline.
    answer is no.
 2. **The three ports** — 41234 UDP discovery, 41235 HTTP control, 41236 TCP data.
 3. **The full message flow** — discovery → connection → transfer → sync.
-4. **The security gap** — auto-accept, no encryption, no pairing. Stating this
-   proactively is far stronger than being caught by it.
+4. **The security model** — devices pair once with a PIN; sensitive files are
+   additionally PIN-encrypted end to end. Non-sensitive traffic is still
+   plaintext JSON on the LAN, and a paired device's transfers auto-accept.
+   Stating this proactively is far stronger than being caught by it.
 5. **Monorepo layout** — three apps, npm workspaces, and the fact that
    `packages/protocol` is unused scaffolding.
 
@@ -655,10 +693,18 @@ full protocol timeline.
 ## 9. Known Limitations
 
 **Security**
-- No authentication or pairing — any LAN device that completes the handshake can
-  send files, and file transfers **auto-accept**.
-- No encryption; all traffic is plaintext JSON over TCP.
-- No rate limiting or connection throttling.
+- Pairing uses a 6-digit PIN with an HMAC proof over an ECDH exchange. It is
+  not a full PAKE, so a recorded pairing allows offline brute-forcing of the PIN
+  (which alone does not reveal the stored secret).
+- Only *sensitive* files are encrypted. Everything else — including metadata and
+  all other traffic — is plaintext JSON over TCP, even between paired devices.
+- A sensitive file's PIN is user-chosen (min. 6 characters); a short PIN can be
+  brute-forced offline by someone who obtains the encrypted file (scrypt slows
+  this but doesn't stop it). Use a passphrase for strong protection.
+- Transfers from a paired device **auto-accept**; there is no per-file prompt.
+- A paired device that is lost or stolen must be removed with *Forget* on the
+  other device; there is no remote revocation.
+- No connection throttling beyond the 3-attempt pairing limit.
 
 **Reliability & scale**
 - Whole files are read into memory (`readFileSync`) on send and reassembled
@@ -689,6 +735,8 @@ full protocol timeline.
 **Product**
 - No packaged installers; must be run from source.
 - Single-window UI, no settings screen, no notifications.
+- Encryption itself streams in 1 MiB blocks, but the sender still reads the
+  whole (encrypted) file into memory to hash and chunk it, like any transfer.
 
 ---
 
@@ -697,14 +745,13 @@ full protocol timeline.
 Ordered by value-to-effort. The first three are what an examiner will ask about.
 
 ### Tier 1 — Close the credibility gaps
-1. **Device pairing and trust** *(roadmap Phase 11)* — public-key exchange on
-   first contact, PIN or QR confirmation shown on both screens (AirDrop-style),
-   persisted trusted-device list, and a hard requirement that a trust
-   relationship exists before `FILE_TRANSFER_REQUEST` or `SYNC_PAIR_REQUEST` is
-   accepted. This also fills the deliberately-empty *authentication* stage in
-   the protocol timeline.
-2. **Encryption in transit** — TLS over the TCP socket, or an application-layer
-   AEAD (e.g. AES-256-GCM) with keys derived from the pairing exchange.
+1. ~~**Device pairing and trust**~~ — *done:* PIN pairing, trusted-device list,
+   and enforcement before any transfer/sync/clipboard message is handled.
+   Still open: upgrade to a real PAKE (SPAKE2/OPAQUE) and add QR pairing.
+2. **Encryption in transit for everything** — sensitive files are already
+   encrypted (AES-256-GCM, PIN-derived key); the next step is an AEAD channel
+   for all traffic, keyed from the stored pairing secret, so non-sensitive
+   files and metadata are protected too.
 3. **Streaming I/O** — replace `readFileSync` / in-memory reassembly with
    `fs.createReadStream` and positional `fs.write`, making transfer memory usage
    independent of file size. This is the single highest-impact engineering fix.
@@ -723,7 +770,7 @@ Ordered by value-to-effort. The first three are what an examiner will ask about.
    `resolveOutputPath`'s traversal guard; integration tests spawning two engines
    on loopback.
 
-### Tier 3 — Features on the roadmap
+### Tier 3 — Planned features
 8. **Extend the persistence layer** *(Phase 12, partly done)* — transfers,
    sessions and devices are now stored in SQLite via `node:sqlite`. Still open:
    persisting the *live* session timeline (today it is rebuilt in memory each
@@ -768,17 +815,21 @@ research-flavoured direction available.
 ```
 PORTS      41234/UDP discovery · 41235/HTTP api (loopback) · 41236/TCP data · 5173 vite
 FRAME      [4-byte uint32 BE length][UTF-8 JSON]   max 16 MiB
-ROUTING    CONNECT_* → ConnectionManager · FILE_* → Transfer · SYNC_* → Sync
+PAIRING    new device: 6-digit PIN shown on one side, typed on the other
+           HMAC(PIN, transcript) over X25519 · 3 tries · 120 s · then trusted
+SENSITIVE  scrypt(PIN) → AES-256-GCM · file saved as .sbenc until unlocked
+ROUTING    CONNECT_*/PAIR_* → ConnectionManager · FILE_* → Transfer · SYNC_* → Sync
            CLIPBOARD_* → Clipboard   (prefix-dispatched over one socket)
 CHUNK      64 KiB, Base64 in JSON · ack each · 5 s stall → retry · 250 ms progress events
 INTEGRITY  SHA-256 over the whole file, checked before anything is written to disk
 TIMERS     discover 10 s searching / 60 s connected · stale 3x interval
            sync scan 5 s · connect timeout 5 s · watchdog 1 s · clipboard poll 1 s
 STATE      identity  ~/.syncbridge/identity.json
+           trusted   ~/.syncbridge/trusted-devices.json   (pairing secrets, 0600)
            history   ~/.syncbridge/history.db        (SQLite, survives restart)
            received  ~/SyncBridge/
            baselines ~/SyncBridge/sync-state/<pairId>.json
-EVENTS     protocol · transfer · sync · clipboard  →  ONE SSE /api/events
+EVENTS     protocol · transfer · sync · clipboard · pairing  →  ONE SSE /api/events
            (one EventSource, fanned out client-side: browsers cap
             concurrent connections per origin, and SSE never releases one)
            →  SessionStore (50 sessions x 5000 events)

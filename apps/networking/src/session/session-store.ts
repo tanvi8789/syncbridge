@@ -363,6 +363,10 @@ function stageForProtocolEvent(event: ProtocolEvent): TimelineStage {
         return "discovery";
     }
 
+    if (event.layer === "authentication") {
+        return "authentication";
+    }
+
     return "connection";
 }
 

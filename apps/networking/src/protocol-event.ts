@@ -8,6 +8,11 @@ export type ProtocolEventType =
     | "CONNECT_REQUEST_RECEIVED"
     | "CONNECT_ACCEPTED"
     | "CONNECT_REJECTED"
+    | "PAIRING_CHALLENGE_SENT"
+    | "PAIRING_CHALLENGE_RECEIVED"
+    | "PAIRING_PROOF_SENT"
+    | "PAIRING_VERIFIED"
+    | "PAIRING_FAILED"
     | "CONNECTION_CLOSED"
     | "MALFORMED_MESSAGE";
 
@@ -15,7 +20,7 @@ export interface ProtocolEvent {
     id: string;
     timestamp: number;
     type: ProtocolEventType;
-    layer: "discovery" | "connection" | "framing";
+    layer: "discovery" | "connection" | "authentication" | "framing";
     deviceId?: string;
     sessionId?: string;
     detail?: string;

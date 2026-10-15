@@ -221,7 +221,7 @@ export function SessionReplay({
                             {stages.map((stage) => {
                                 const isActive = current?.stage === stage.key;
                                 const isDone = !isActive && reachedStages.has(stage.key);
-                                const isEmpty = stage.key === "authentication";
+                                const isEmpty = false;
 
                                 return (
                                     <div
@@ -343,6 +343,16 @@ function describeProtocolEvent(event: ProtocolEvent): string {
             return "Sent connection request";
         case "CONNECT_REQUEST_RECEIVED":
             return "Received connection request";
+        case "PAIRING_CHALLENGE_SENT":
+            return `Challenged the peer to prove it knows the PIN${event.detail ? ` (${event.detail})` : ""}`;
+        case "PAIRING_CHALLENGE_RECEIVED":
+            return `Received a pairing challenge${event.detail ? ` (${event.detail})` : ""}`;
+        case "PAIRING_PROOF_SENT":
+            return "Sent proof of the PIN (the PIN itself was not sent)";
+        case "PAIRING_VERIFIED":
+            return `Pairing verified${event.detail ? ` — ${event.detail}` : ""}`;
+        case "PAIRING_FAILED":
+            return `Pairing failed${event.detail ? `: ${event.detail}` : ""}`;
         case "CONNECT_ACCEPTED":
             return "Connection accepted — session established";
         case "CONNECT_REJECTED":

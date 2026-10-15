@@ -7,6 +7,7 @@ import { EventEmitter } from "node:events";
 import { ConnectionManager } from "../connection/connection-manager";
 import { TcpServer } from "../connection/tcp-server";
 import { SessionStore } from "./session-store";
+import { autoPairingListener, testTrustStore } from "../pairing/test-support";
 
 const TCP_PORT = 41236;
 
@@ -42,7 +43,11 @@ function assert(condition: boolean, message: string): void {
  * than two full NetworkingEngines, since both would try to bind the
  * same default TCP port in-process.
  */
-function createNode(deviceId: string, name: string) {
+function createNode(
+    deviceId: string,
+    name: string,
+    pairingListener?: ReturnType<typeof autoPairingListener>
+) {
     const bus = new EventEmitter();
 
     const connectionManager = new ConnectionManager(
@@ -52,7 +57,10 @@ function createNode(deviceId: string, name: string) {
         undefined,
         (event) => bus.emit("protocol-event", event),
         (event) => bus.emit("transfer-event", event),
-        (event) => bus.emit("sync-event", event)
+        (event) => bus.emit("sync-event", event),
+        undefined,
+        testTrustStore(),
+        pairingListener
     );
 
     const sessionStore = new SessionStore(bus);
@@ -73,7 +81,11 @@ async function main(): Promise<void> {
         fs.unlinkSync(RECEIVED_FILE);
     }
 
-    const server = createNode(serverDeviceId, "Test Server");
+    const server = createNode(
+        serverDeviceId,
+        "Test Server",
+        autoPairingListener(serverDeviceId, () => client.connectionManager)
+    );
     const client = createNode(clientDeviceId, "Test Client");
 
     const tcpServer = new TcpServer((socket) => {
