@@ -1,115 +1,147 @@
 # SyncBridge
 
-A desktop LAN peer-to-peer file-transfer and folder-sync application built with
-Electron, React, and Node.js. Devices find each other automatically, pair once
-with a PIN, and then move files directly — no cloud, no account, no internet.
-Every step of the networking protocol is recorded and can be replayed in the UI.
+SyncBridge is a desktop app for moving files between computers on the same
+local network. Devices find each other automatically, connect directly, and
+transfer files or keep folders in sync. There is no cloud service, no account
+and no internet connection involved.
 
-## Features
+It is also built to teach how networking works. Every step of the protocol
+(discovery, connection, pairing, chunked transfer, verification) is recorded as
+a structured event, so you can replay a session and see what happened on the
+wire.
 
-- Automatic LAN discovery (UDP broadcast) and direct TCP connections
-- **PIN pairing** — a new device must be approved with a 6-digit PIN; paired
-  devices are remembered and reconnect without one
-- **Sensitive files** — mark a file as sensitive and it is encrypted with a PIN
-  you choose; the receiver can only open it by entering the same PIN
-- Chunked transfers with pause / resume / cancel, retry on stall, and SHA-256
-  verification
-- Two-way folder synchronization with conflict detection
-- Shared clipboard between connected devices
-- Protocol timeline with replay, "explain mode", and session export
-- Transfer history and analytics dashboard
-- Sidebar layout with a live map of nearby devices, light and dark themes
-  (follows the system setting by default), and toast notifications
+## What it does
 
-## Tech Stack
+**Connect**
+- Finds other SyncBridge devices on the LAN automatically (UDP broadcast).
+- Opens a direct TCP connection between two devices.
+- Pairs a new device once with a 6-digit PIN, then remembers it.
 
-- Electron
-- React
-- TypeScript
-- Node.js (no third-party networking dependencies)
+**Share**
+- Sends files with live progress, speed and ETA, and lets you pause, resume or
+  cancel. Large files are split into chunks, each one acknowledged, and the
+  whole file is verified with a SHA-256 checksum.
+- Keeps a folder in sync between two devices, and keeps both copies when the
+  same file was edited on each side.
+- Shares copied text between connected devices.
+- Lets you mark a file as sensitive so it is encrypted with a PIN you choose.
 
-## Repository Structure
+**Understand**
+- Records each session as a timeline you can replay, with plain-English
+  explanations of every step (Explain mode) and export to JSON, Markdown or a
+  Mermaid diagram.
+- Shows a live visualizer of every chunk in a transfer.
+- Saves transfer history and shows analytics for throughput, latency and retries.
+
+## How it fits together
 
 ```
-apps/networking   networking engine: discovery, connections, pairing, transfer, sync
-apps/api          local REST + SSE control plane (127.0.0.1:41235)
-apps/desktop      Electron + React UI
-packages/         shared protocol scaffolding
-docs/             architecture, protocol messages, prior-art notes
-PROJECT_OVERVIEW.md   full walkthrough of the design
+ Desktop app (Electron + React)
+            |  HTTP + server-sent events, localhost only
+ Local API (Node.js)
+            |
+ Networking engine (Node.js)
+   discovery (UDP) | connections, pairing, transfer, sync, clipboard (TCP)
 ```
 
-## Development
+The networking engine does all the work and has no UI. The local API exposes it
+to the desktop app over REST and a single event stream, and the desktop app is
+a React interface wrapped in Electron for file pickers and native clipboard
+access. Networking uses only Node's built-in `dgram`, `net` and `crypto`
+modules, with no third-party networking libraries.
 
-Install dependencies once, then run the local API and renderer:
+## Tech stack
+
+- Electron and React for the desktop app
+- TypeScript throughout
+- Node.js for the API and the networking engine
+- SQLite (`node:sqlite`) for transfer history
+- Vite for the renderer build
+
+## Project structure
+
+```
+apps/networking   Networking engine: discovery, connections, pairing,
+                  transfer, sync, clipboard, history, session recording
+apps/api          Local REST and event-stream API (127.0.0.1:41235)
+apps/desktop      Electron shell and React interface
+packages/protocol Shared protocol definitions (early scaffolding)
+docs/             Architecture notes, protocol message reference, prior art
+PROJECT_OVERVIEW.md  Full walkthrough of the design and decisions
+```
+
+## Getting started
+
+Requires Node.js 22 or newer.
 
 ```bash
 npm install
 npm run dev
 ```
 
-In a second terminal, build and open the Electron shell:
+This builds the networking engine, then starts the API and the Vite dev server.
+In a second terminal, build and open the Electron app:
 
 ```bash
 npm run desktop:electron
 ```
 
-Run static checks with `npm run check`.
+To try it you need two machines on the same network, each running SyncBridge.
+Run `npm run check` to type-check every workspace.
 
-### Tests
+## Using it
 
-The networking tests are runnable scripts (no test framework required):
+1. Open **Devices**. Other machines running SyncBridge appear on the map.
+2. Select one and choose **Connect**. The first time, one device shows a PIN and
+   the other asks for it. After that the two devices trust each other.
+3. Drop a file on the connected device, or use **Send file** in **Transfers**.
+   Tick *This file is sensitive* if it should be locked with a PIN.
+4. Use **Folder sync** to keep a folder identical on two devices, and
+   **Clipboard** to share copied text.
+5. Open **Protocol** to replay a session, and **Analytics** to see throughput
+   and latency over time.
+
+## Ports and files
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| 41234 | UDP | Device discovery |
+| 41235 | HTTP | Local API, bound to 127.0.0.1 only |
+| 41236 | TCP | Device-to-device connection |
+| 5173 | HTTP | Vite dev server |
+
+| Location | Contents |
+|---|---|
+| `~/SyncBridge/Received` | Files received from other devices |
+| `~/SyncBridge/sync-state` | Folder sync baselines |
+| `~/.syncbridge` | Device identity, paired devices, transfer history |
+
+## Tests
+
+The networking tests are runnable scripts and need no test framework:
 
 ```bash
 cd apps/networking
-npx tsx src/pairing/test-pairing.ts                  # PIN pairing + sensitive files, end to end
-npx tsx src/connection/test-connection-lifecycle.ts  # handshake, rejects, session lifecycle
+npx tsx src/pairing/test-pairing.ts                  # pairing and sensitive files
+npx tsx src/connection/test-connection-lifecycle.ts  # handshake and rejections
 ```
 
-## Pairing two devices
+## Security in brief
 
-1. Run SyncBridge on both machines (same network). Each appears in the other's
-   device list.
-2. On device **A**, click **Connect** next to device **B**.
-3. Device **B** shows a 6-digit PIN. Device **A** asks for it — type it in.
-4. Both devices now list each other under **Paired devices** (Devices view). From now on
-   connecting needs no PIN.
+- A new device must be paired with a PIN before it can send anything. The PIN is
+  never sent over the network.
+- Sensitive files are encrypted with AES-256-GCM using a key derived from the
+  PIN, and stay locked on the receiving device until the PIN is entered.
+- All other traffic on the LAN is plaintext, and transfers from a paired device
+  are accepted automatically.
 
-You have 3 attempts and 2 minutes. To revoke a device, click **Forget** next to
-it under **Paired devices**; it will need a new PIN to connect again. (Forget it
-on both sides if you want both to stop trusting each other.)
+The details, including known limits, are in
+[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) and
+[docs/protocol/messages.md](docs/protocol/messages.md).
 
-How it works: the PIN is never sent over the network. Each side proves it knows
-it with an HMAC over a transcript that includes an ephemeral X25519 key
-exchange; a successful pairing stores a derived secret in
-`~/.syncbridge/trusted-devices.json`, which later connections use to
-authenticate automatically. Until a peer has authenticated, SyncBridge ignores
-every transfer, sync and clipboard message from it.
+## Status
 
-## Sending a sensitive file
-
-1. Drop a file on a connected device in the Devices view (or use **Send file**
-   in Transfers) and pick the device.
-2. In the dialog tick **This file is sensitive** and choose a PIN (at least 6
-   characters — a longer passphrase is safer).
-3. Tell the receiver the PIN yourself, in person or by message. SyncBridge never
-   sends it.
-4. The file is encrypted (AES-256-GCM, key derived from the PIN with scrypt)
-   before it leaves your machine. The receiver sees a **🔒 Locked** file with a
-   generic name; clicking **Unlock** and entering the PIN decrypts it into the
-   received folder and removes the encrypted copy. A wrong PIN is rejected, and
-   five wrong tries lock the file for 30 seconds.
-
-## Security notes
-
-- Only sensitive files are encrypted. Other traffic on the LAN is still
-  plaintext JSON, even between paired devices.
-- Pairing is a PIN-authenticated key exchange, not a full PAKE: someone who
-  records a pairing could guess the 6-digit PIN offline, but that does not
-  reveal the stored pairing secret.
-- A short sensitive-file PIN can be brute-forced by anyone who obtains the
-  encrypted file. Use a passphrase for strong protection.
-- Transfers from a paired device are accepted automatically.
-
-See [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) for the architecture, protocol,
-known limitations, and future work.
+SyncBridge works end to end on a LAN. Planned work includes encrypting all
+traffic, streaming large files instead of buffering them, a proper automated
+test suite, and packaged installers. See the future work section of
+[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md).
