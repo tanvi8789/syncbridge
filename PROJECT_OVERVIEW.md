@@ -436,6 +436,8 @@ syncbridge/
 │     └─ src/                  App.tsx · TransferVisualizer.tsx · ProtocolTimeline.tsx
 │                                AnalyticsDashboard.tsx · TransferHistory.tsx · charts.tsx
 │                                PairingDialog.tsx · PinDialog.tsx · TrustedDevices.tsx
+│                                NetworkMap.tsx · TransferCard.tsx · PinInput.tsx · Toasts.tsx
+│                                index.css (design tokens, light/dark) · shell.css (layout, components)
 │                                api.ts · explain.ts · session-export.ts
 │                                sync-activity.ts · format.ts
 ├─ packages/protocol/          ← Phase-0 scaffold, currently unused
@@ -734,7 +736,7 @@ full protocol timeline.
 
 **Product**
 - No packaged installers; must be run from source.
-- Single-window UI, no settings screen, no notifications.
+- Single-window UI with no settings screen and no OS-level notifications.
 - Encryption itself streams in 1 MiB blocks, but the sender still reads the
   whole (encrypted) file into memory to hash and chunk it, like any transfer.
 
@@ -795,8 +797,9 @@ Ordered by value-to-effort. The first three are what an examiner will ask about.
 16. **Mobile companion app** speaking the same protocol.
 17. **Packaging and release** *(Phase 14)* — `electron-builder` for macOS `.dmg`
     and Windows `.exe`, auto-update, code signing.
-18. **UX polish** *(Phase 13)* — loading and empty states, system notifications,
-    dark mode, a settings screen for ports and the received-files directory.
+18. **UX polish** — the sidebar shell, dark mode, empty and loading states, and
+    toasts are done. Still open: system notifications and a settings screen for
+    ports and the received-files directory.
 
 ### Research direction
 `docs/patent/PRIOR_ART.md` begins a prior-art assessment (currently one entry,

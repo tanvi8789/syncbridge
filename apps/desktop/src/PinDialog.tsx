@@ -25,34 +25,30 @@ export function SendOptionsDialog({
     const pinValid = pin.length >= MIN_SENSITIVE_PIN_LENGTH;
 
     return (
-        <div className="visualizer-overlay" onClick={onCancel}>
+        <div className="modal-overlay" onClick={onCancel}>
             <div
-                className="visualizer-panel pairing-dialog"
+                className="modal modal-narrow"
                 role="dialog"
                 aria-modal="true"
                 onClick={(event) => event.stopPropagation()}
             >
-                <div className="visualizer-header">
+                <div className="modal-header">
                     <div>
                         <strong>
                             Send {fileCount} file{fileCount === 1 ? "" : "s"} to{" "}
                             {deviceLabel}
                         </strong>
-                        <span className="visualizer-subtitle">
-                            Mark files as sensitive to lock them with a PIN.
+                        <span className="modal-subtitle">
+                            Sensitive files are locked with a PIN you choose.
                         </span>
                     </div>
 
-                    <button
-                        className="visualizer-close"
-                        aria-label="Cancel"
-                        onClick={onCancel}
-                    >
-                        ✕
+                    <button className="btn btn-ghost btn-sm" onClick={onCancel}>
+                        Cancel
                     </button>
                 </div>
 
-                <label className="sensitive-toggle">
+                <label className={`choice${sensitive ? " on" : ""}`}>
                     <input
                         type="checkbox"
                         checked={sensitive}
@@ -68,47 +64,44 @@ export function SendOptionsDialog({
                 </label>
 
                 {sensitive && (
-                    <div className="pairing-form">
-                        <input
-                            className="pairing-input pin-text"
-                            type={reveal ? "text" : "password"}
-                            autoFocus
-                            autoComplete="off"
-                            placeholder={`PIN (min ${MIN_SENSITIVE_PIN_LENGTH} characters)`}
-                            value={pin}
-                            onChange={(event) => setPin(event.target.value)}
-                            aria-label="PIN for this file"
-                        />
-                        <button
-                            type="button"
-                            className="connect-button"
-                            onClick={() => setReveal((value) => !value)}
-                        >
-                            {reveal ? "Hide" : "Show"}
-                        </button>
+                    <div className="reveal">
+                        <div className="field-row">
+                            <input
+                                className="input"
+                                type={reveal ? "text" : "password"}
+                                autoFocus
+                                autoComplete="off"
+                                placeholder={`PIN, at least ${MIN_SENSITIVE_PIN_LENGTH} characters`}
+                                value={pin}
+                                onChange={(event) => setPin(event.target.value)}
+                                aria-label="PIN for this file"
+                            />
+                            <button
+                                type="button"
+                                className="btn"
+                                onClick={() => setReveal((value) => !value)}
+                            >
+                                {reveal ? "Hide" : "Show"}
+                            </button>
+                        </div>
+
+                        <p className="modal-note">
+                            Tell the receiver this PIN yourself, in person or by
+                            message. SyncBridge never sends it. A longer
+                            passphrase is safer than a short number.
+                        </p>
                     </div>
                 )}
 
-                {sensitive && (
-                    <p className="pairing-hint">
-                        Tell the receiver this PIN yourself (in person or by
-                        message). It is never sent by SyncBridge. A longer
-                        passphrase is safer than a short number.
-                    </p>
-                )}
-
-                <div className="pairing-actions">
-                    <button className="disconnect-button" onClick={onCancel}>
-                        Cancel
-                    </button>
+                <div className="modal-actions">
                     <button
-                        className="connect-button"
+                        className="btn btn-primary"
                         disabled={busy || (sensitive && !pinValid)}
                         onClick={() =>
                             onConfirm(sensitive ? { sensitive: true, pin } : undefined)
                         }
                     >
-                        {busy ? "Sending…" : sensitive ? "Encrypt & send" : "Send"}
+                        {busy ? "Sending" : sensitive ? "Encrypt and send" : "Send"}
                     </button>
                 </div>
             </div>
@@ -139,39 +132,35 @@ export function UnlockDialog({ onUnlock, onCancel }: UnlockDialogProps) {
     };
 
     return (
-        <div className="visualizer-overlay" onClick={onCancel}>
+        <div className="modal-overlay" onClick={onCancel}>
             <div
-                className="visualizer-panel pairing-dialog"
+                className="modal modal-narrow"
                 role="dialog"
                 aria-modal="true"
                 onClick={(event) => event.stopPropagation()}
             >
-                <div className="visualizer-header">
+                <div className="modal-header">
                     <div>
                         <strong>Unlock sensitive file</strong>
-                        <span className="visualizer-subtitle">
+                        <span className="modal-subtitle">
                             Enter the PIN the sender gave you.
                         </span>
                     </div>
 
-                    <button
-                        className="visualizer-close"
-                        aria-label="Cancel"
-                        onClick={onCancel}
-                    >
-                        ✕
+                    <button className="btn btn-ghost btn-sm" onClick={onCancel}>
+                        Cancel
                     </button>
                 </div>
 
                 <form
-                    className="pairing-form"
+                    className="field-row"
                     onSubmit={(event) => {
                         event.preventDefault();
                         void submit();
                     }}
                 >
                     <input
-                        className="pairing-input pin-text"
+                        className="input"
                         type="password"
                         autoFocus
                         autoComplete="off"
@@ -182,14 +171,14 @@ export function UnlockDialog({ onUnlock, onCancel }: UnlockDialogProps) {
                     />
                     <button
                         type="submit"
-                        className="connect-button"
+                        className="btn btn-primary"
                         disabled={busy || pin.length === 0}
                     >
-                        {busy ? "Unlocking…" : "Unlock"}
+                        {busy ? "Unlocking" : "Unlock"}
                     </button>
                 </form>
 
-                {error && <div className="pairing-error">{error}</div>}
+                {error && <div className="inline-error">{error}</div>}
             </div>
         </div>
     );

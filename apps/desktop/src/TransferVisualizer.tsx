@@ -27,12 +27,28 @@ const CHUNK_SENT = 1;
 const CHUNK_ACKED = 2;
 const CHUNK_RETRIED = 3;
 
-const CHUNK_COLORS: Record<number, string> = {
-    [CHUNK_PENDING]: "#e3e5e8",
-    [CHUNK_SENT]: "#3b5998",
-    [CHUNK_ACKED]: "#247a45",
-    [CHUNK_RETRIED]: "#a83232",
+/*
+ * Theme tokens rather than literal colours, so the grid follows the
+ * light/dark theme. The canvas can't read a CSS variable directly, so
+ * the values are resolved from the document each time it is drawn.
+ */
+const CHUNK_VARS: Record<number, string> = {
+    [CHUNK_PENDING]: "--surface-3",
+    [CHUNK_SENT]: "--accent",
+    [CHUNK_ACKED]: "--ok",
+    [CHUNK_RETRIED]: "--danger",
 };
+
+function resolveChunkColors(): Record<number, string> {
+    const style = getComputedStyle(document.documentElement);
+
+    return Object.fromEntries(
+        Object.entries(CHUNK_VARS).map(([state, name]) => [
+            state,
+            style.getPropertyValue(name).trim() || "#888888",
+        ])
+    );
+}
 
 const LEGEND_ITEMS: Array<{ state: number; label: string }> = [
     { state: CHUNK_PENDING, label: "Waiting" },
@@ -80,7 +96,7 @@ function describeEvent(
                 : `Transferring… ${event.chunksAcked.toLocaleString()}/${totalChunks.toLocaleString()} chunks confirmed`;
         case "CHUNK_RETRY":
             return typeof event.chunkIndex === "number"
-                ? `Chunk ${event.chunkIndex + 1} timed out — retrying`
+                ? `Chunk ${event.chunkIndex + 1} timed out, retrying`
                 : null;
         case "TRANSFER_PAUSED":
             return "Transfer paused";
@@ -334,22 +350,22 @@ export function TransferVisualizer({
     };
 
     return (
-        <div className="visualizer-overlay" onClick={onClose}>
+        <div className="modal-overlay" onClick={onClose}>
             <div
-                className="visualizer-panel"
+                className="modal"
                 onClick={(event) => event.stopPropagation()}
             >
-                <div className="visualizer-header">
+                <div className="modal-header">
                     <div>
                         <strong>{transfer.fileName}</strong>
-                        <span className="visualizer-subtitle">
+                        <span className="modal-subtitle">
                             {transfer.direction === "received" ? "Receiving from" : "Sending to"}{" "}
                             peer {transfer.peerDeviceId.slice(0, 8)}
                         </span>
                     </div>
 
-                    <button className="visualizer-close" onClick={onClose}>
-                        ✕
+                    <button className="btn btn-ghost btn-sm" onClick={onClose}>
+                        Close
                     </button>
                 </div>
 
@@ -436,7 +452,7 @@ export function TransferVisualizer({
                         <span className="legend-item" key={item.state}>
                             <span
                                 className="legend-swatch"
-                                style={{ background: CHUNK_COLORS[item.state] }}
+                                style={{ background: `var(${CHUNK_VARS[item.state]})` }}
                             />
                             {item.label}
                         </span>
@@ -460,12 +476,12 @@ export function TransferVisualizer({
 
                     <div>
                         <span className="label">Speed</span>
-                        <strong>{isActive ? `${formatBytes(speedBps)}/s` : "—"}</strong>
+                        <strong>{isActive ? `${formatBytes(speedBps)}/s` : "n/a"}</strong>
                     </div>
 
                     <div>
                         <span className="label">ETA</span>
-                        <strong>{eta !== null ? formatDuration(eta) : "—"}</strong>
+                        <strong>{eta !== null ? formatDuration(eta) : "n/a"}</strong>
                     </div>
 
                     <div>
@@ -558,11 +574,13 @@ function drawGrid(
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    const colors = resolveChunkColors();
+
     for (let index = 0; index < totalChunks; index++) {
         const column = index % columns;
         const row = Math.floor(index / columns);
 
-        ctx.fillStyle = CHUNK_COLORS[chunkState[index]] ?? CHUNK_COLORS[CHUNK_PENDING];
+        ctx.fillStyle = colors[chunkState[index]] ?? colors[CHUNK_PENDING];
 
         ctx.fillRect(
             column * cellSize + 1,

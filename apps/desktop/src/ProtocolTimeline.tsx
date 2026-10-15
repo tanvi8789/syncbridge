@@ -152,25 +152,25 @@ export function SessionReplay({
     );
 
     return (
-        <div className="visualizer-overlay" onClick={onClose}>
+        <div className="modal-overlay" onClick={onClose}>
             <div
-                className="visualizer-panel timeline-panel"
+                className="modal timeline-panel"
                 onClick={(event) => event.stopPropagation()}
             >
-                <div className="visualizer-header">
+                <div className="modal-header">
                     <div>
                         <strong>Session with {peerLabel}</strong>
-                        <span className="visualizer-subtitle">{sessionId}</span>
+                        <span className="modal-subtitle">{sessionId}</span>
                     </div>
 
-                    <div className="visualizer-header-actions">
+                    <div className="modal-header-actions">
                         <button
                             className="connect-button"
                             disabled={exporting !== null || !timeline?.length}
                             onClick={() => handleExport("json")}
                             title="Full machine-readable export of this session"
                         >
-                            {exporting === "json" ? "…" : "JSON"}
+                            {exporting === "json" ? "Exporting" : "JSON"}
                         </button>
 
                         <button
@@ -179,7 +179,7 @@ export function SessionReplay({
                             onClick={() => handleExport("markdown")}
                             title="Readable write-up with event counts and timeline"
                         >
-                            {exporting === "markdown" ? "…" : "Markdown"}
+                            {exporting === "markdown" ? "Exporting" : "Markdown"}
                         </button>
 
                         <button
@@ -188,12 +188,12 @@ export function SessionReplay({
                             onClick={() => handleExport("mermaid")}
                             title="Mermaid sequence diagram of the messages exchanged"
                         >
-                            {exporting === "mermaid" ? "…" : "Diagram"}
+                            {exporting === "mermaid" ? "Exporting" : "Diagram"}
                         </button>
 
-                        <button className="visualizer-close" onClick={onClose}>
-                            ✕
-                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={onClose}>
+                        Close
+                    </button>
                     </div>
                 </div>
 
@@ -204,7 +204,7 @@ export function SessionReplay({
 
                 {!timeline && !loadError && (
                     <div className="empty-state compact">
-                        <strong>Loading timeline…</strong>
+                        <strong>Loading timeline</strong>
                     </div>
                 )}
 
@@ -350,11 +350,11 @@ function describeProtocolEvent(event: ProtocolEvent): string {
         case "PAIRING_PROOF_SENT":
             return "Sent proof of the PIN (the PIN itself was not sent)";
         case "PAIRING_VERIFIED":
-            return `Pairing verified${event.detail ? ` — ${event.detail}` : ""}`;
+            return `Pairing verified${event.detail ? `: ${event.detail}` : ""}`;
         case "PAIRING_FAILED":
             return `Pairing failed${event.detail ? `: ${event.detail}` : ""}`;
         case "CONNECT_ACCEPTED":
-            return "Connection accepted — session established";
+            return "Connection accepted, session established";
         case "CONNECT_REJECTED":
             return `Connection rejected${event.detail ? `: ${event.detail}` : ""}`;
         case "CONNECTION_CLOSED":
