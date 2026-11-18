@@ -2,6 +2,7 @@
 node_modules/
 dist/
 build/
+!apps/desktop/build/
 
 # Logs
 npm-debug.log*

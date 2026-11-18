@@ -1,29 +1,71 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "electron-build/main.js",
   "scripts": {
     "dev": "vite",
     "electron": "electron . --no-sandbox",
-    "build": "tsc -p tsconfig.electron.json && tsc -b && vite build",
+    "build": "npm run build:electron && tsc -b && vite build",
     "lint": "oxlint src electron",
     "check": "tsc -p tsconfig.electron.json --noEmit && tsc -b",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "preview": "vite preview",
+    "build:electron": "esbuild electron/main.ts --bundle --platform=node --format=esm --target=node24 --outfile=electron-build/main.js --external:electron \"--banner:js=import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);\" && esbuild electron/preload.cts --bundle --platform=node --format=cjs --target=node24 --outfile=electron-build/preload.cjs --external:electron",
+    "package": "npm run build && electron-builder",
+    "package:dir": "npm run build && electron-builder --dir"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
+    "api": "1.0.0",
     "electron": "^44.2.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
     "oxlint": "^1.79.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "typescript": "~6.0.2",
     "vite": "^8.2.2"
+  },
+  "description": "SyncBridge: LAN peer-to-peer file transfer and folder sync",
+  "author": "SyncBridge",
+  "build": {
+    "appId": "com.syncbridge.app",
+    "productName": "SyncBridge",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron-build/**/*",
+      "dist/**/*",
+      "package.json"
+    ],
+    "artifactName": "SyncBridge-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg"
+      ],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "SyncBridge ${version}"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "electronVersion": "44.2.0"
   }
 }

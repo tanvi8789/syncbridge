@@ -1,0 +1,70 @@
+name: Release
+
+# Pushing a version tag such as v1.0.0 builds the installers on a macOS and a
+# Windows runner and attaches them to a GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            builder_args: --mac --arm64 --x64
+            artifacts: apps/desktop/release/*.dmg
+          - os: windows-latest
+            builder_args: --win --x64
+            artifacts: apps/desktop/release/*.exe
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the networking engine and API
+        run: npm run build:engine
+
+      - name: Build the desktop app
+        run: npm --workspace apps/desktop run build
+
+      - name: Package installers
+        working-directory: apps/desktop
+        run: npx electron-builder ${{ matrix.builder_args }} --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: installers/*
+          generate_release_notes: true

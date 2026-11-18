@@ -1,11 +1,50 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, nativeTheme } from "electron";
+import {
+    app,
+    BrowserWindow,
+    clipboard,
+    dialog,
+    ipcMain,
+    nativeTheme,
+    net,
+    protocol,
+    shell,
+} from "electron";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { startApi, type ApiHandle } from "api";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const isDev = !app.isPackaged;
+
+/*
+ * The packaged app runs the networking engine and its local API inside
+ * this process. In development they run separately (`npm run dev`) so
+ * they restart on change, unless SYNCBRIDGE_EMBED=1 asks for the
+ * packaged behaviour.
+ */
+const embedEngine = !isDev || process.env.SYNCBRIDGE_EMBED === "1";
+
+/*
+ * The packaged UI is served from this custom scheme instead of
+ * file://, so it has a real origin the API can allow (a file page
+ * sends "Origin: null", which would have to be trusted for everyone).
+ */
+const APP_SCHEME = "app";
+const APP_HOST = "syncbridge";
+
+protocol.registerSchemesAsPrivileged([
+    {
+        scheme: APP_SCHEME,
+        privileges: {
+            standard: true,
+            secure: true,
+            supportFetchAPI: true,
+        },
+    },
+]);
 
 const API_BASE_URL = "http://127.0.0.1:41235";
 
@@ -18,6 +57,7 @@ const CLIPBOARD_POLL_MS = 1000;
 
 let mainWindow: BrowserWindow | null = null;
 let clipboardTimer: NodeJS.Timeout | null = null;
+let engine: ApiHandle | null = null;
 
 /*
  * The last text this process has seen — whether the user copied it
@@ -63,9 +103,7 @@ function createWindow(): void {
     if (isDev) {
         mainWindow.loadURL("http://localhost:5173");
     } else {
-        mainWindow.loadFile(
-            path.join(__dirname, "../dist/index.html")
-        );
+        mainWindow.loadURL(`${APP_SCHEME}://${APP_HOST}/`);
     }
 
     mainWindow.on("closed", () => {
@@ -154,16 +192,83 @@ ipcMain.handle("select-folder", async () => {
     return result.filePaths[0];
 });
 
-app.whenReady().then(() => {
-    createWindow();
-    startClipboardWatcher();
+/** Serve the built UI (dist/) under app://syncbridge/. */
+function registerAppProtocol(): void {
+    const distDirectory = path.resolve(__dirname, "..", "dist");
 
-    app.on("activate", () => {
-        if (BrowserWindow.getAllWindows().length === 0) {
-            createWindow();
+    protocol.handle(APP_SCHEME, (request) => {
+        const url = new URL(request.url);
+
+        if (url.host !== APP_HOST) {
+            return new Response("Not found", { status: 404 });
+        }
+
+        const requested = decodeURIComponent(url.pathname);
+        const filePath = path.resolve(
+            distDirectory,
+            "." + (requested === "/" ? "/index.html" : requested)
+        );
+
+        // Never serve anything outside the built UI.
+        if (!filePath.startsWith(distDirectory + path.sep)) {
+            return new Response("Forbidden", { status: 403 });
+        }
+
+        return net.fetch(pathToFileURL(filePath).toString());
+    });
+}
+
+/*
+ * The engine binds fixed ports, so only one copy can run per machine.
+ * A second launch just brings the first window forward.
+ */
+const isFirstInstance = app.requestSingleInstanceLock();
+
+if (!isFirstInstance) {
+    app.quit();
+} else {
+    app.on("second-instance", () => {
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) {
+                mainWindow.restore();
+            }
+
+            mainWindow.focus();
         }
     });
-});
+
+    app.whenReady().then(async () => {
+        if (embedEngine) {
+            try {
+                engine = await startApi();
+            } catch (error) {
+                dialog.showErrorBox(
+                    "SyncBridge could not start",
+                    `The networking engine failed to start. Another program may be using ports 41234 to 41236.\n\n${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                );
+
+                app.quit();
+
+                return;
+            }
+        }
+
+        if (!isDev) {
+            registerAppProtocol();
+        }
+
+        createWindow();
+        startClipboardWatcher();
+
+        app.on("activate", () => {
+            if (BrowserWindow.getAllWindows().length === 0) {
+                createWindow();
+            }
+        });
+    });
+}
 
 app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
@@ -171,9 +276,23 @@ app.on("window-all-closed", () => {
     }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
     if (clipboardTimer) {
         clearInterval(clipboardTimer);
         clipboardTimer = null;
+    }
+
+    /*
+     * Stop the engine cleanly (it flushes history) before the process
+     * exits. Quitting again after cancelling this event is unreliable
+     * on macOS, so once the engine is down the process exits directly.
+     */
+    if (engine) {
+        const running = engine;
+
+        engine = null;
+        event.preventDefault();
+
+        void running.stop().finally(() => app.exit(0));
     }
 });

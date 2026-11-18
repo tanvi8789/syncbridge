@@ -15,5 +15,7 @@
   },
   "dependencies": {
     "networking": "1.0.0"
-  }
+  },
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts"
 }

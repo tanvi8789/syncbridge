@@ -70,6 +70,28 @@ docs/             Architecture notes, protocol message reference, prior art
 PROJECT_OVERVIEW.md  Full walkthrough of the design and decisions
 ```
 
+## Install
+
+Download the installer for your system from the
+[Releases](../../releases) page.
+
+- **macOS:** open the `.dmg` and drag SyncBridge to Applications. Use the
+  `arm64` file on Apple Silicon Macs and the `x64` file on Intel Macs.
+- **Windows:** run the `.exe` installer.
+
+The installers are not signed with a paid certificate, so the first launch shows
+a warning:
+
+- **macOS:** right-click SyncBridge in Applications and choose **Open**, then
+  **Open** again. If macOS still refuses, run
+  `xattr -cr /Applications/SyncBridge.app` in Terminal and open it again.
+- **Windows:** on the SmartScreen prompt choose **More info**, then
+  **Run anyway**.
+
+On first launch allow SyncBridge through the firewall (Windows) or allow local
+network access (macOS). Without this, other devices cannot be discovered. Both
+computers need to be on the same network.
+
 ## Getting started
 
 Requires Node.js 22 or newer.
@@ -126,7 +148,7 @@ npx tsx src/pairing/test-pairing.ts                  # pairing and sensitive fil
 npx tsx src/connection/test-connection-lifecycle.ts  # handshake and rejections
 ```
 
-## Security in brief
+## Security
 
 - A new device must be paired with a PIN before it can send anything. The PIN is
   never sent over the network.

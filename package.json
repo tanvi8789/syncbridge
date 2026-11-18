@@ -12,8 +12,11 @@
     "networking": "npm --workspace apps/networking run dev",
     "build:networking": "npm --workspace apps/networking run build",
     "dev": "npm run build:networking && concurrently -k \"npm --workspace apps/networking run build -- -w\" \"npm --workspace apps/api run dev\" \"npm --workspace apps/desktop run dev\"",
-    "desktop:electron": "npm run build:networking && npm --workspace apps/desktop run build && npm --workspace apps/desktop run electron",
-    "check": "npm --workspace apps/networking run check && npm --workspace apps/api run check && npm --workspace apps/desktop run check && npm --workspace protocol run check"
+    "desktop:electron": "npm run build:engine && npm --workspace apps/desktop run build && npm --workspace apps/desktop run electron",
+    "check": "npm run build:engine && npm --workspace apps/desktop run check && npm --workspace protocol run check",
+    "build:engine": "npm --workspace apps/networking run build && npm --workspace apps/api run build",
+    "package": "npm run build:engine && npm --workspace apps/desktop run package",
+    "package:dir": "npm run build:engine && npm --workspace apps/desktop run package:dir"
   },
   "devDependencies": {
     "@types/electron": "^1.4.38",
