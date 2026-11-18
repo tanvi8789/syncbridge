@@ -111,6 +111,16 @@ npm run desktop:electron
 To try it you need two machines on the same network, each running SyncBridge.
 Run `npm run check` to type-check every workspace.
 
+To build an installer for your own machine:
+
+```bash
+npm run package        # writes the installer to apps/desktop/release
+```
+
+Releases are built automatically: pushing a version tag such as `v1.0.0` makes
+GitHub Actions build the macOS and Windows installers and attach them to a
+GitHub Release.
+
 ## Using it
 
 1. Open **Devices**. Other machines running SyncBridge appear on the map.
@@ -163,7 +173,8 @@ The details, including known limits, are in
 
 ## Status
 
-SyncBridge works end to end on a LAN. Planned work includes encrypting all
-traffic, streaming large files instead of buffering them, a proper automated
-test suite, and packaged installers. See the future work section of
+SyncBridge works end to end on a LAN and ships as installers for macOS and
+Windows. Planned work includes encrypting all traffic, streaming large files
+instead of buffering them, a proper automated test suite, code signing and
+auto-update. See the future work section of
 [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md).

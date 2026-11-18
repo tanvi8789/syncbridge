@@ -50,7 +50,8 @@ transfer utility.
 | Encryption of *all* traffic in transit | ❌ Not built (only sensitive files are encrypted) |
 | Persistent transfer history (SQLite) | ✅ Working |
 | Analytics dashboard (throughput / RTT / retries) | ✅ Working |
-| Packaged installers | ❌ Not built |
+| Sidebar interface with live device map, light and dark themes | ✅ Working |
+| Packaged installers (macOS `.dmg`, Windows `.exe`) built and published by CI | ✅ Working (unsigned) |
 
 ---
 
@@ -69,6 +70,11 @@ transfer utility.
 - **`tsc` project references** — per-app `tsconfig` extending `tsconfig.base.json`.
 - **concurrently** — runs networking build watch + API + Vite together (`npm run dev`).
 - **oxlint** — linting for the desktop app.
+- **esbuild** — bundles the Electron main process, the API and the engine into
+  one file for the installer, so the packaged app ships no `node_modules`.
+- **electron-builder** — produces the macOS `.dmg` and the Windows NSIS `.exe`.
+- **GitHub Actions** — builds both installers on macOS and Windows runners when
+  a version tag is pushed, and attaches them to a GitHub Release.
 
 ### Node standard-library modules doing the real work
 The project deliberately uses **zero third-party networking dependencies**. All
@@ -203,18 +209,23 @@ needed no change to the connection layer beyond one more prefix branch.
 
 ## 4. Architecture
 
-### Three processes, one device
+### Layers of one device
+
+In development these are separate processes; in the packaged app the API and engine
+run inside the Electron main process (see the note after the diagram).
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Electron Main Process                                   │
 │  • BrowserWindow • native file/folder pickers (IPC)      │
-│  • Reveal-in-folder                                      │
+│  • Clipboard watcher • serves the UI from app://         │
+│  • Packaged app: starts the API + engine in-process      │
 └──────────────────────┬───────────────────────────────────┘
                        │ contextBridge (preload.cts)
 ┌──────────────────────▼───────────────────────────────────┐
 │  Renderer — React 19 + Vite                              │
-│  App.tsx · TransferVisualizer.tsx · ProtocolTimeline.tsx │
+│  Sidebar views: Devices · Transfers · Folder sync ·      │
+│  Clipboard · Protocol · Analytics                        │
 └──────────────────────┬───────────────────────────────────┘
                        │ HTTP REST (fetch) + SSE (EventSource)
                        │ http://127.0.0.1:41235
@@ -235,14 +246,23 @@ needed no change to the connection layer beyond one more prefix branch.
                   ═════▼═════  Local Network  ═════════════
 ```
 
-**Key architectural decision:** the API process — *not* Electron — owns the
-`NetworkingEngine`. Electron only supplies native UI affordances (file picker,
-folder picker, reveal-in-folder) over IPC. This guarantees exactly one engine per
-device, and lets the whole networking stack run headless for testing.
+**Key architectural decision:** the API layer — *not* the UI — owns the
+`NetworkingEngine`, exactly one per device. Electron supplies only native
+affordances (file and folder pickers, reveal-in-folder, the clipboard watcher)
+over IPC. How the API is hosted differs by mode:
+
+- **Development:** the API runs as its own process (`npm run dev`), so it
+  restarts on every code change.
+- **Packaged app:** Electron's main process starts it in-process through
+  `startApi()` and stops it cleanly on quit, so an installed app is
+  self-contained.
+
+Either way the renderer talks to it over the same loopback HTTP and SSE, and the
+engine can run headless for tests.
 
 ### Event flow
 
-The engine is an `EventEmitter` publishing three independent streams:
+The engine is an `EventEmitter` publishing independent event streams:
 
 | Event name | Emitted by | Example types |
 |---|---|---|
@@ -250,8 +270,9 @@ The engine is an `EventEmitter` publishing three independent streams:
 | `transfer-event` | TransferSender / TransferReceiver | `CHUNK_SENT`, `CHUNK_ACKED`, `CHUNK_RETRY`, `TRANSFER_PROGRESS`, `TRANSFER_VERIFIED`, `TRANSFER_COMPLETED` |
 | `sync-event` | SyncEngine | `PAIR_CREATED`, `SCAN_COMPLETE`, `FILE_QUEUED`, `FILE_DELETED`, `CONFLICT` |
 | `clipboard-event` | ClipboardManager | `CLIPBOARD_SENT`, `CLIPBOARD_RECEIVED`, `CLIPBOARD_BLOCKED` |
+| `pairing-event` | ConnectionManager | `PIN_DISPLAY`, `PIN_ENTRY`, `PAIRED`, `PAIRING_FAILED` (carries the PIN to show, so it only goes to the local UI) |
 
-The API fans all four out to the browser over a **single SSE endpoint**
+The API fans all five out to the browser over a **single SSE endpoint**
 (`GET /api/events`), tagged by event name. In parallel, `SessionStore` consumes
 the protocol/transfer/sync streams in-process and threads every event onto its
 `sessionId`, building a replayable timeline. This matters because SSE has no
@@ -430,9 +451,13 @@ syncbridge/
 │  │     ├─ clipboard/             clipboard-manager · clipboard-messages · clipboard-event
 │  │     ├─ history/               history-store   (SQLite: transfers, sessions, devices)
 │  │     └─ session/               session-store   (event correlation + export)
-│  ├─ api/src/index.ts         ← REST + SSE control plane (802 lines, single file)
+│  ├─ api/src/
+│  │  ├─ server.ts             ← REST + SSE control plane, exports startApi()
+│  │  └─ index.ts              ← CLI entry for development (npm run dev)
 │  └─ desktop/
-│     ├─ electron/             main.ts (window, IPC) · preload.cts (contextBridge)
+│     ├─ build/icon.png        ← app icon used by the installers
+│     ├─ electron/             main.ts (window, IPC, app:// protocol, hosts the
+│     │                          engine when packaged) · preload.cts (contextBridge)
 │     └─ src/                  App.tsx · TransferVisualizer.tsx · ProtocolTimeline.tsx
 │                                AnalyticsDashboard.tsx · TransferHistory.tsx · charts.tsx
 │                                PairingDialog.tsx · PinDialog.tsx · TrustedDevices.tsx
@@ -446,13 +471,14 @@ syncbridge/
 │  ├─ protocol/messages.md
 │  ├─ patent/PRIOR_ART.md
 │  (PROJECT_OVERVIEW.md at the repo root is this file)
+├─ .github/workflows/release.yml   ← builds and publishes the installers
 ├─ README.md
 └─ package.json                ← npm workspaces root
 ```
 
-**Scale:** ~12,000 lines of TypeScript. Largest files: `App.tsx` (1108),
-`connection-manager.ts` (891), `transfer-manager.ts` (870), `api/index.ts` (802),
-`sync-engine.ts` (773).
+**Scale:** about 19,700 lines of TypeScript. Largest files: `App.tsx` (2,062),
+`connection-manager.ts` (1,711), `api/server.ts` (1,265), `transfer-manager.ts`
+(1,003), `api.ts` (876), `sync-engine.ts` (773).
 
 ### Running it
 
@@ -460,14 +486,52 @@ syncbridge/
 npm install
 npm run dev              # builds networking, watches it, runs API + Vite
 npm run desktop:electron # in a second terminal: build + launch Electron
-npm run check            # typecheck every workspace
+npm run check            # build the engine and API, then typecheck every workspace
+npm run package:dir      # build an unpacked app for this machine (release/)
+npm run package          # build the installer for this machine
 ```
 
-There are also standalone harnesses inside the engine
-(`test-peer.ts`, `test-tcp-peer.ts`, `test-connection-lifecycle.ts`,
-`test-file-transfer*.ts`, `test-session-timeline.ts`) that exercise each layer
-headlessly, without Electron. These are manual scripts, **not** an automated
+The runnable test scripts live inside the engine and need no framework:
+`pairing/test-pairing.ts` (PIN pairing and sensitive files end to end),
+`connection/test-connection-lifecycle.ts`, `transfer/test-file-transfer.ts` and
+`session/test-session-timeline.ts`. A few older harnesses (`test-tcp-peer.ts`,
+`test-file-transfer-peer.ts`, `test-file-transfer-sender.ts`) predate pairing
+and no longer complete the handshake. These are scripts, **not** an automated
 test suite.
+
+### Building and releasing
+
+**Pipeline**
+
+```
+git tag v1.0.0 && git push origin v1.0.0
+        |
+GitHub Actions (macOS runner and Windows runner, in parallel)
+  npm ci → build engine + API → build UI → electron-builder
+        |
+GitHub Release with the installers attached
+  SyncBridge-1.0.0-mac-arm64.dmg · SyncBridge-1.0.0-mac-x64.dmg
+  SyncBridge-1.0.0-win-x64.exe
+```
+
+**How the packaged app is self-contained**
+1. `esbuild` bundles `electron/main.ts`, the API and the engine into a single
+   `main.js` (the preload script is bundled separately). Nothing is installed
+   alongside it.
+2. On launch the main process calls `startApi()`, which starts the engine and
+   the loopback API, then opens the window.
+3. The UI is served from a custom `app://syncbridge/` protocol rather than
+   `file://`. That gives the page a real origin the API can allow, instead of
+   having to trust the `null` origin that file pages send.
+4. A single-instance lock stops a second copy fighting over the fixed ports,
+   and on quit the engine is stopped first so history is flushed.
+5. `node:sqlite` works because Electron 44 bundles Node 24.
+
+**Signing.** The installers are not signed with a paid certificate. macOS builds
+are ad-hoc signed so the bundle's signature is valid (an unsigned Apple Silicon
+build can show as "damaged"); users still open it once with right-click, Open.
+Windows shows a SmartScreen prompt (More info, Run anyway). Notarization and
+real signing would remove both warnings.
 
 ---
 
@@ -592,10 +656,13 @@ counter continue. Then show the checksum verification line in the log.
   `sync-state.ts`, `sync-messages.ts`, `sync-event.ts`
 - `apps/networking/src/session/session-store.ts`
 - `apps/networking/src/history/history-store.ts`
-- `apps/api/src/index.ts` (REST + SSE)
+- `apps/api/src/server.ts` and `index.ts` (REST + SSE, `startApi()`)
 - `apps/desktop/` — Electron main/preload, `App.tsx`, `api.ts`,
   `TransferVisualizer.tsx`, `ProtocolTimeline.tsx`, `AnalyticsDashboard.tsx`,
-  `TransferHistory.tsx`, `charts.tsx`
+  `TransferHistory.tsx`, `charts.tsx`, `NetworkMap.tsx`, `TransferCard.tsx`,
+  and the pairing dialogs
+- The release pipeline: `.github/workflows/release.yml` and the
+  `electron-builder` config in `apps/desktop/package.json`
 
 > This is the broadest module, and the history/analytics work has widened it
 > further. If the group prefers even slices, split it as
@@ -622,8 +689,8 @@ counter continue. Then show the checksum verification line in the log.
   `sessionId`, with bounded memory (50 sessions, 5000 events each, 2-minute
   discovery lookback). Explain *why* it exists: SSE has no history, so a UI
   opened late would see an empty screen.
-- **API design**: loopback-only bind, CORS allowlist, 1 MiB body cap, one SSE
-  endpoint multiplexing four event names — and one *client* EventSource fanned
+- **API design**: loopback-only bind, CORS allowlist (the dev server and the packaged `app://` origin), 1 MiB body cap, one SSE
+  endpoint multiplexing five event names — and one *client* EventSource fanned
   out in `api.ts`. Explain why: a browser caps concurrent connections per
   origin and an SSE connection is never released, so one stream per event type
   starves the app's own fetches.
@@ -640,9 +707,11 @@ counter continue. Then show the checksum verification line in the log.
   sender-side only and skips resent chunks, because a retried chunk has no
   unambiguous round trip.
 - **Electron process model**: main / preload / renderer, `contextIsolation:
-  true`, `nodeIntegration: false`, and the `contextBridge` exposing exactly
-  three IPC methods. Explain why the engine lives in the API process, not in
-  Electron.
+  true`, `nodeIntegration: false`, and the `contextBridge` exposing a small
+  fixed set of IPC methods (file and folder pickers, reveal-in-folder, dropped
+  file paths, clipboard read and write). Explain why the engine belongs to the
+  API layer rather than the UI, and why the packaged app hosts that layer inside
+  Electron's main process while development runs it separately.
 - **Canvas rendering**: chunk grid driven by `requestAnimationFrame` from a
   mutable ref, deliberately bypassing React's render cycle so thousands of chunk
   events don't cause thousands of re-renders.
@@ -677,7 +746,11 @@ full protocol timeline.
 
 | Decision | Rationale | Cost |
 |---|---|---|
-| Electron over a web app | Needs local filesystem and raw TCP/UDP, which browsers don't expose | Large bundle; packaging work |
+| Electron over a web app | Needs local filesystem and raw TCP/UDP, which browsers don't expose | Large bundle (about 120 MB installer) |
+| Engine hosted in Electron's main process when packaged | An installed app must work with no separate process to start | Engine shares a process with the window code |
+| One esbuild bundle instead of shipping `node_modules` | Workspace packages are awkward to package; one file is simple and fast to load | Native modules would need special handling (none are used) |
+| Custom `app://` protocol for the UI | Gives the UI a real origin the API can allow | A little more main-process code than `loadFile` |
+| Unsigned installers | No paid certificate needed for a demo or submission | One-time OS warning on first open |
 | JSON protocol messages | Human-readable, trivially debuggable, language-independent | Verbose on the wire |
 | Base64 file chunks inside JSON | One uniform message format; no second binary parser | ~33% overhead — the biggest known inefficiency |
 | 4-byte length-prefix framing | Simplest correct solution to TCP's stream semantics | Hand-rolled, needs the 16 MiB guard |
@@ -735,7 +808,8 @@ full protocol timeline.
 - Conflicts are surfaced, never merged.
 
 **Product**
-- No packaged installers; must be run from source.
+- Installers are unsigned (one-time OS warning), there is no auto-update, and
+  there is no Linux build.
 - Single-window UI with no settings screen and no OS-level notifications.
 - Encryption itself streams in 1 MiB blocks, but the sender still reads the
   whole (encrypted) file into memory to hash and chunk it, like any transfer.
@@ -795,8 +869,9 @@ Ordered by value-to-effort. The first three are what an examiner will ask about.
     manual peer entry by IP.
 15. **IPv6 support.**
 16. **Mobile companion app** speaking the same protocol.
-17. **Packaging and release** *(Phase 14)* — `electron-builder` for macOS `.dmg`
-    and Windows `.exe`, auto-update, code signing.
+17. **Packaging and release** — *done:* unsigned macOS `.dmg` and Windows
+    `.exe` built by GitHub Actions on a version tag. Still open: code signing
+    and notarization, auto-update (`electron-updater`) and a Linux build.
 18. **UX polish** — the sidebar shell, dark mode, empty and loading states, and
     toasts are done. Still open: system notifications and a settings screen for
     ports and the received-files directory.
@@ -844,4 +919,7 @@ HISTORY    terminal transfers swept into SQLite on a 1 s debounce
 RUN        npm run dev          (networking watch + api + vite)
            npm run desktop:electron
            npm run check        (typecheck all workspaces)
+PACKAGE    npm run package      (installer for this machine, in apps/desktop/release)
+RELEASE    git tag v1.0.0 && git push origin v1.0.0  → CI builds and publishes
+           macOS .dmg (arm64, x64) and Windows .exe
 ```
